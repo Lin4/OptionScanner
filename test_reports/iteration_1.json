@@ -1,0 +1,50 @@
+{
+  "summary": "OptiScreen backend fully tested with 33 pytest cases across auth, profile, and all 4 screener endpoints. 33/33 pass after fixing a CRITICAL ObjectId serialization bug in POST /api/auth/register. All AI-powered screener endpoints (find-stocks, best-options, ticker-options, stock-analysis for day/swing/long) return the expected contract fields and are correctly auth-gated. No MongoDB _id leaks observed in any response.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/register",
+        "issue": "Returned 500 Internal Server Error on every call. motor's insert_one mutates the dict to inject _id (ObjectId), then the response dict comprehension kept _id, breaking FastAPI JSON encoding (TypeError: 'ObjectId' object is not iterable). FIXED by excluding '_id' alongside 'password' when building the response (server.py:283).",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_optiscreen_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Verify the register fix (server.py:283) in code review — the same mutation risk exists anywhere motor insert_one is used before returning the dict; current code only has it in /auth/register but add a lint/pattern check.",
+    "Optional: /api/auth/logout silently succeeds for malformed/unknown tokens (returns {ok:true}). Low risk but could be tightened to 401 for unauthenticated callers if desired.",
+    "Optional: /api/auth/session (Google OAuth) could not be exercised end-to-end without a real Emergent session_id — only the invalid-session 401 path verified."
+  ],
+  "critical_code_review_comments": [
+    "server.py:280-283 — motor insert_one adds _id to the dict in-place; always exclude _id (and sensitive fields) when echoing a Mongo-sourced dict back to the client. Already applied here, but worth a project-wide convention.",
+    "server.py:35 — no uvicorn reload-related issues; routes look clean and all return dicts (FastAPI serializes).",
+    "server.py:111-132 — get_user_from_token has a dual path (session store OR raw JWT). Minor: if a JWT is valid but the user doc was deleted, it 401s correctly. Good.",
+    "server.py:116 — if token not in user_sessions and JWT decode fails, code raises inside except then falls through; verified behavior returns 401 as expected.",
+    "server.py:447-456 — AI JSON extraction via regex is fragile but tolerant (falls back to defaults), which is acceptable for MVP mocked market data."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (register endpoint: exclude _id from response)",
+    "/app/backend/tests/conftest.py (new)",
+    "/app/backend/tests/test_optiscreen_api.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (33/33)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Used seeded user trader@optiscreen.app / TestPass123! from /app/memory/test_credentials.md. Additional throwaway TEST_* users created per test; left in DB (users collection) — safe to purge by email prefix TEST_.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend is green. Tests live at /app/backend/tests/. Note: pydantic EmailStr rejects reserved TLDs like .test — use @mail.com or similar for test emails. All screener endpoints call Claude via emergentintegrations and take ~3-6s each; use 60s timeouts. The best-options endpoint sorts results by annual_pct_no_margin desc. The /api/auth/session Google OAuth path cannot be fully exercised without a real Emergent session_id.",
+  "rca_of_issue": "RCA: POST /api/auth/register 500. Root cause: motor's insert_one mutates the input document in place by injecting _id (bson.ObjectId). The handler then built its response via dict comprehension that only filtered out 'password', so _id (ObjectId) leaked into the response dict. FastAPI's jsonable_encoder cannot serialize ObjectId → TypeError bubbled to a generic 500. Reproduction: curl -X POST .../api/auth/register -d '{\"email\":\"x@y.com\",\"password\":\"a\"}'. Mitigation applied: added '_id' to the exclusion set in the comprehension (server.py:283). Also prevents the explicit requirement 'Mongo _id must never leak in any API response' from being violated here."
+}

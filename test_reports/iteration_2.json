@@ -1,0 +1,43 @@
+{
+  "summary": "OptiScreen integrations backend tested end-to-end: Push (register + test + daily-pick + earnings-reminder), ElevenLabs TTS/STT, PayPal sandbox config/create-order/capture-order, plus regression on /api/auth/login and /api/screener/best-options. 22/22 pytest cases pass. Push endpoints handle the EMERGENT_PUSH_KEY=placeholder scenario gracefully (never crash): /push/test, /push/daily-pick, /push/earnings-reminder all return 200 with {ok:false,error:'EMERGENT_PUSH_KEY missing or invalid'} as documented in the playbook. ElevenLabs TTS returns a valid data:audio/mpeg;base64 blob (b64 length ~29KB); STT correctly transcribes a generated WAV. PayPal sandbox token exchange works; create-order returns an approve_url on https://www.sandbox.paypal.com with correct plan prices (simple=9.00, advance=29.00, expert=79.00); invalid plan -> 400; bogus capture -> 502. Auth gating verified on every protected endpoint. No MongoDB _id leaks observed in any response.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_integrations.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/integrations_results.xml"
+  ],
+  "action_items": [
+    "No action required. Confirm the deployer swaps EMERGENT_PUSH_KEY=placeholder with a real key at build time; preview env correctly surfaces the 401 as {ok:false,error:'EMERGENT_PUSH_KEY missing or invalid'} without raising.",
+    "Optional hardening: /api/register-push currently bubbles upstream 401 as HTTP 500 via HTTPException(500,'EMERGENT_PUSH_KEY missing or invalid') (integrations.py:33). This is per playbook, but main agent may want to also return {ok:false,error:...} like /push/test for symmetry when the device-registration call happens on an unauthenticated public endpoint.",
+    "Optional: integrations.py:17 instantiates a module-level httpx.AsyncClient with X-Push-Key header baked in. If EMERGENT_PUSH_KEY is rotated at runtime, this client won't pick it up — tolerable since .env is read once per process start."
+  ],
+  "critical_code_review_comments": [
+    "integrations.py:17-21 — module-level httpx.AsyncClient is created at import time; header is pinned. Fine for deploy-time key injection, but means tests cannot monkeypatch EMERGENT_PUSH_KEY after import.",
+    "integrations.py:33 — register_push_token raises HTTP 500 on upstream 401; /push/* routes in server.py catch Exception and translate to {ok:false,error}. Consistent with playbook.",
+    "integrations.py:81 — ElevenLabs client is None if key missing; TTS/STT then raise 500 'ElevenLabs not configured'. Current key works; verified.",
+    "server.py:629-632 — /stt/transcribe reads whole upload into memory then passes to ElevenLabs; fine for short clips but set a size cap for production.",
+    "integrations.py:174-175 — PayPal return/cancel URLs are hardcoded to the preview domain. Should be derived from EXPO_BACKEND_URL or a dedicated PAYPAL_RETURN_URL env var for environment portability.",
+    "server.py:665 — paypal_capture returns {status, plan, order_id} but drops the raw object; good for client safety."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_integrations.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (22/22)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Reused seeded trader@optiscreen.app / TestPass123! from /app/memory/test_credentials.md. No new persistent users created. One PayPal sandbox order was created per create-order test (3 total) — these are sandbox-only and expire automatically.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Integration test suite lives at /app/backend/tests/test_integrations.py. BASE_URL and seed_token fixtures are in conftest.py. Push tests assume EMERGENT_PUSH_KEY=placeholder (preview env) — do NOT fail on upstream 401, verify graceful {ok:false,error} shape. ElevenLabs calls take ~3-7s; PayPal token calls ~1-3s; both are well under 30s timeouts. All 22 cases passed in ~10s with 2-worker parallel scheduling.",
+  "rca_of_issue": "No new bugs. Prior iteration_1 ObjectId bug remains fixed. The 'push test returns ok:false' is NOT a bug — it is expected graceful degradation for a placeholder key, as called out in the request's agent_to_agent_context_note."
+}
