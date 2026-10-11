@@ -31,6 +31,7 @@ from market import (
     UNIVERSE, UNIVERSE_INDEX, fetch_stock_bundle, get_quote, get_candles,
     sma as calc_sma, rsi as calc_rsi, support_resistance, detect_candle_patterns, detect_chart_patterns,
 )
+from options_math import enrich_legs_with_greeks, analyze_strategy_payoff, scenario_matrix
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -88,6 +89,15 @@ class TickerOptionsReq(BaseModel):
 class StockAnalysisReq(BaseModel):
     ticker: str
     purpose: str  # day | swing | long
+
+class WatchlistAddReq(BaseModel):
+    ticker: str
+
+class AlertAddReq(BaseModel):
+    ticker: str
+    kind: str  # price_above | price_below | earnings
+    threshold: Optional[float] = None  # for price alerts
+    note: Optional[str] = None
 
 
 # ========== UTIL ==========
@@ -152,8 +162,8 @@ def sparkline_from_candles(candles: List[Dict], points: int = 20) -> List[float]
     closes = [c["c"] for c in candles[-points:]]
     return [round(float(c), 2) for c in closes]
 
-def build_option_strategy(ticker: str, name: str, sector: str, price: float, expiration: str, sparkline: List[float]) -> Dict:
-    """Build an option strategy priced around the REAL current price."""
+def build_option_strategy(ticker: str, name: str, sector: str, price: float, expiration: str, sparkline: List[float], iv: float = 0.35) -> Dict:
+    """Build an option strategy priced around the REAL current price, enriched with Greeks + payoff."""
     strat = random.choice(STRATEGIES)
     exp_days = {"daily": 1, "day": 1, "week": 7, "month": 30, "3months": 90, "custom": 14}.get(expiration, 30)
     exp_date = (now_utc() + timedelta(days=exp_days)).strftime("%Y-%m-%d")
@@ -163,39 +173,61 @@ def build_option_strategy(ticker: str, name: str, sector: str, price: float, exp
     collat_margin = round(collateral * 0.25, 2)
     annual_pct_collat = round((premium * 100) / collateral * (365 / exp_days) * 100, 2)
     annual_pct_margin = round((premium * 100) / collat_margin * (365 / exp_days) * 100, 2)
-    legs = []
     if strat == "Cash Secured Put":
-        legs = [{"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date}]
+        legs = [{"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date, "qty": 1}]
     elif strat == "Covered Call":
-        legs = [{"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date}]
+        legs = [{"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date, "qty": 1}]
     elif strat == "Bull Put Spread":
         legs = [
-            {"action": "Sell", "type": "Put", "strike": round(price * 0.97, 2), "exp": exp_date},
-            {"action": "Buy", "type": "Put", "strike": round(price * 0.92, 2), "exp": exp_date},
+            {"action": "Sell", "type": "Put", "strike": round(price * 0.97, 2), "exp": exp_date, "qty": 1},
+            {"action": "Buy", "type": "Put", "strike": round(price * 0.92, 2), "exp": exp_date, "qty": 1},
         ]
     elif strat == "Bear Call Spread":
         legs = [
-            {"action": "Sell", "type": "Call", "strike": round(price * 1.03, 2), "exp": exp_date},
-            {"action": "Buy", "type": "Call", "strike": round(price * 1.08, 2), "exp": exp_date},
+            {"action": "Sell", "type": "Call", "strike": round(price * 1.03, 2), "exp": exp_date, "qty": 1},
+            {"action": "Buy", "type": "Call", "strike": round(price * 1.08, 2), "exp": exp_date, "qty": 1},
         ]
     elif strat == "Iron Condor":
         legs = [
-            {"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date},
-            {"action": "Buy", "type": "Put", "strike": round(price * 0.90, 2), "exp": exp_date},
-            {"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date},
-            {"action": "Buy", "type": "Call", "strike": round(price * 1.10, 2), "exp": exp_date},
+            {"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date, "qty": 1},
+            {"action": "Buy", "type": "Put", "strike": round(price * 0.90, 2), "exp": exp_date, "qty": 1},
+            {"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date, "qty": 1},
+            {"action": "Buy", "type": "Call", "strike": round(price * 1.10, 2), "exp": exp_date, "qty": 1},
         ]
     else:
         legs = [
-            {"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date},
-            {"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date},
+            {"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date, "qty": 1},
+            {"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date, "qty": 1},
         ]
+    # Determine net premium sign: credit strategies positive, debit negative.
+    credit_strats = {"Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Short Strangle"}
+    premium_net = premium if strat in credit_strats else -premium
+    legs = enrich_legs_with_greeks(legs, S=price, iv=iv, dte_days=exp_days)
+    payoff = analyze_strategy_payoff(strat, legs, S=price, premium_net=premium_net)
+    scenarios = scenario_matrix(price, premium_net=premium_net, legs=legs, iv=iv, dte_days=exp_days)
+    # Aggregate greeks across legs
+    net_greeks = {k: round(sum(l.get(k, 0) for l in legs), 3) for k in ("delta", "gamma", "theta", "vega")}
     return {
         "ticker": ticker, "name": name, "sector": sector, "price": round(price, 2),
-        "strategy": strat, "legs": legs, "premium": premium, "expiration": exp_date,
-        "expiration_days": exp_days, "pop": pop, "collateral": collateral,
-        "collateral_margin": collat_margin, "annual_pct_no_margin": annual_pct_collat,
-        "annual_pct_margin": annual_pct_margin, "sparkline": sparkline,
+        "strategy": strat, "legs": legs, "premium": premium, "premium_net": premium_net,
+        "expiration": exp_date, "expiration_days": exp_days, "pop": pop,
+        "collateral": collateral, "collateral_margin": collat_margin,
+        "annual_pct_no_margin": annual_pct_collat, "annual_pct_margin": annual_pct_margin,
+        "sparkline": sparkline,
+        "max_profit": payoff["max_profit"], "max_loss": payoff["max_loss"], "breakevens": payoff["breakevens"],
+        "greeks": net_greeks, "iv_assumed": iv,
+        "scenario_matrix": scenarios,
+        "assumptions": {
+            "iv_assumed_pct": round(iv * 100, 1),
+            "risk_free_rate_pct": 4.5,
+            "model": "Black-Scholes European",
+            "pricing_note": "Theoretical. Real option quotes may differ.",
+        },
+        "data_source": {
+            "quote": "Finnhub (real-time, delayed <= 1 min)",
+            "option_pricing": "Theoretical via Black-Scholes",
+            "fetched_at": now_utc().isoformat(),
+        },
     }
 
 async def enrich_universe_pick(ticker: str, expiration: str) -> Optional[Dict]:
@@ -558,7 +590,177 @@ async def live_quote(ticker: str, authorization: Optional[str] = Header(default=
         q = await get_quote(client, ticker.upper())
     if not q:
         raise HTTPException(status_code=404, detail=f"No quote for {ticker}")
-    return {"ticker": ticker.upper(), **q}
+    return {"ticker": ticker.upper(), **q, "fetched_at": now_utc().isoformat(), "source": "Finnhub"}
+
+
+# ========== WATCHLIST ==========
+@api_router.post("/watchlist/add")
+async def watchlist_add(req: WatchlistAddReq, authorization: Optional[str] = Header(default=None)):
+    user = await get_user_from_token(authorization)
+    tk = req.ticker.upper()
+    await db.watchlist.update_one(
+        {"user_id": user["user_id"], "ticker": tk},
+        {"$set": {"user_id": user["user_id"], "ticker": tk, "added_at": now_utc()}},
+        upsert=True,
+    )
+    return {"ok": True, "ticker": tk}
+
+@api_router.delete("/watchlist/{ticker}")
+async def watchlist_remove(ticker: str, authorization: Optional[str] = Header(default=None)):
+    user = await get_user_from_token(authorization)
+    await db.watchlist.delete_one({"user_id": user["user_id"], "ticker": ticker.upper()})
+    return {"ok": True}
+
+@api_router.get("/watchlist")
+async def watchlist_list(authorization: Optional[str] = Header(default=None)):
+    user = await get_user_from_token(authorization)
+    rows = await db.watchlist.find({"user_id": user["user_id"]}, {"_id": 0, "user_id": 0}).to_list(100)
+    tickers = [r["ticker"] for r in rows]
+    quotes: Dict[str, Dict] = {}
+    async with httpx.AsyncClient() as client:
+        qs = await asyncio.gather(*[get_quote(client, t) for t in tickers], return_exceptions=True)
+    for t, q in zip(tickers, qs):
+        if isinstance(q, dict):
+            quotes[t] = q
+    items = []
+    for r in rows:
+        tk = r["ticker"]
+        q = quotes.get(tk)
+        items.append({
+            "ticker": tk,
+            "added_at": r["added_at"].isoformat() if hasattr(r["added_at"], "isoformat") else r["added_at"],
+            "quote": q,
+            "name": UNIVERSE_INDEX.get(tk, {}).get("name", tk),
+            "sector": UNIVERSE_INDEX.get(tk, {}).get("sector"),
+        })
+    return {"items": items, "fetched_at": now_utc().isoformat()}
+
+
+# ========== ALERTS ==========
+@api_router.post("/alerts/add")
+async def alerts_add(req: AlertAddReq, authorization: Optional[str] = Header(default=None)):
+    user = await get_user_from_token(authorization)
+    if req.kind not in ("price_above", "price_below", "earnings"):
+        raise HTTPException(status_code=400, detail="Invalid alert kind")
+    alert = {
+        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "ticker": req.ticker.upper(),
+        "kind": req.kind,
+        "threshold": req.threshold,
+        "note": req.note,
+        "active": True,
+        "created_at": now_utc(),
+    }
+    await db.alerts.insert_one(alert)
+    alert.pop("_id", None)
+    alert.pop("user_id", None)
+    alert["created_at"] = alert["created_at"].isoformat()
+    return alert
+
+@api_router.get("/alerts")
+async def alerts_list(authorization: Optional[str] = Header(default=None)):
+    user = await get_user_from_token(authorization)
+    rows = await db.alerts.find({"user_id": user["user_id"]}, {"_id": 0, "user_id": 0}).sort("created_at", -1).to_list(200)
+    for r in rows:
+        if hasattr(r.get("created_at"), "isoformat"):
+            r["created_at"] = r["created_at"].isoformat()
+    return {"items": rows}
+
+@api_router.delete("/alerts/{alert_id}")
+async def alerts_remove(alert_id: str, authorization: Optional[str] = Header(default=None)):
+    user = await get_user_from_token(authorization)
+    await db.alerts.delete_one({"user_id": user["user_id"], "alert_id": alert_id})
+    return {"ok": True}
+
+
+# ========== LEARN ==========
+LEARN_CARDS = [
+    {
+        "id": "cash-secured-put",
+        "category": "Options Strategy",
+        "title": "Cash-Secured Put",
+        "outlook": "Mildly bullish / neutral",
+        "summary": "Sell a put, hold enough cash to buy the shares if assigned. Earn premium while waiting for a buy price you like.",
+        "pros": ["Fixed max loss", "Income while waiting", "Lower cost basis if assigned"],
+        "cons": ["Full stock downside below strike minus premium", "Ties up capital as collateral"],
+        "when": "When you'd happily own the stock at the strike price",
+    },
+    {
+        "id": "covered-call",
+        "category": "Options Strategy",
+        "title": "Covered Call",
+        "outlook": "Neutral to mildly bullish",
+        "summary": "Own 100 shares and sell a call above market. Generate income and cap upside.",
+        "pros": ["Income on stock you already own", "Reduces cost basis"],
+        "cons": ["Caps upside above strike", "Still full downside risk"],
+        "when": "When the stock looks range-bound and you're happy to sell at the strike",
+    },
+    {
+        "id": "bull-put-spread",
+        "category": "Options Strategy",
+        "title": "Bull Put Spread (Credit)",
+        "outlook": "Bullish",
+        "summary": "Sell a put, buy a lower-strike put. Defined-risk income trade.",
+        "pros": ["Defined max loss", "High probability setups possible", "Less capital than CSP"],
+        "cons": ["Capped profit", "Early assignment risk on short leg"],
+        "when": "When you want bullish income with a fixed worst case",
+    },
+    {
+        "id": "iron-condor",
+        "category": "Options Strategy",
+        "title": "Iron Condor",
+        "outlook": "Neutral / range-bound",
+        "summary": "Sell OTM put + call, buy further OTM protection on both sides.",
+        "pros": ["Defined risk", "Profits from time decay if stock stays in range"],
+        "cons": ["Both sides can lose on big moves", "Multiple legs = commissions"],
+        "when": "Low volatility environments with a defined range",
+    },
+    {
+        "id": "risk-vs-reward",
+        "category": "Risk Primer",
+        "title": "Risk tolerance vs. risk capacity",
+        "outlook": "",
+        "summary": "Tolerance is how comfortable you are with losses emotionally. Capacity is how much you can afford to lose financially. Build portfolios around whichever is lower.",
+        "pros": [],
+        "cons": [],
+        "when": "Before every strategy decision",
+    },
+    {
+        "id": "position-sizing",
+        "category": "Risk Primer",
+        "title": "Position sizing basics",
+        "outlook": "",
+        "summary": "Risk no more than 1-2% of your portfolio on any single trade. Size positions by distance to stop-loss, not by conviction.",
+        "pros": [],
+        "cons": [],
+        "when": "Every entry",
+    },
+    {
+        "id": "intrinsic-value",
+        "category": "Fundamentals",
+        "title": "Intrinsic value is a range, not a point",
+        "outlook": "",
+        "summary": "Always express intrinsic value as a range of scenarios (bear / base / bull) with explicit growth and discount-rate assumptions.",
+        "pros": [],
+        "cons": [],
+        "when": "Long-term investment decisions",
+    },
+    {
+        "id": "greeks",
+        "category": "Options Glossary",
+        "title": "The Greeks (Delta, Gamma, Theta, Vega)",
+        "outlook": "",
+        "summary": "Delta = price sensitivity to the stock. Gamma = delta's rate of change. Theta = time decay per day. Vega = sensitivity to implied volatility.",
+        "pros": [],
+        "cons": [],
+        "when": "Every options trade",
+    },
+]
+
+@api_router.get("/learn/cards")
+async def learn_cards():
+    return {"cards": LEARN_CARDS}
 
 
 # ========== PUSH NOTIFICATIONS ==========
@@ -696,6 +898,9 @@ async def startup():
         await db.user_sessions.create_index("session_token", unique=True)
         await db.user_sessions.create_index("user_id")
         await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+        await db.watchlist.create_index([("user_id", 1), ("ticker", 1)], unique=True)
+        await db.alerts.create_index("user_id")
+        await db.alerts.create_index("alert_id", unique=True)
     except Exception as e:
         logger.warning(f"index: {e}")
     logger.info("OptiScreen API ready")

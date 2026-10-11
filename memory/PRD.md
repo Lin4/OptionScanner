@@ -1,33 +1,60 @@
-# OptiScreen - Product Requirements
+# OptiScreen - AI Stock & Options Intelligence Platform
 
 ## Vision
-AI-powered mobile app for options and stock screening. Helps retail traders find high-probability option strategies and analyze stocks for day trading, swing trading, and long-term investing.
+Research-first, transparent, trust-driven AI intelligence platform. AI acts as an interpreter — explaining structured evidence, surfacing uncertainty — not predicting markets.
 
-## Core Modules
-1. **Onboarding** - Account creation (email+password or Google), plan selection (Free/Simple/Advance/Expert), broker-style questionnaire, consent form.
-2. **Find Stocks** - Filter optionable stocks by risk, reward, expiration, sector; AI returns top N stocks with recommended option strategies.
-3. **Best Options** - Period-based ranking (day/week/month/custom) of top strategies with legs, premium, expiration, probability of profit, collateral (with/without margin), annual return %.
-4. **Ticker Options** - User-entered ticker + expiration range -> best option strategy with full details.
-5. **Day/Swing Trading Analysis** - Candlestick/chart patterns, moving averages, support/resistance, buy/sell/stop-loss points, RSI, short float, option volume, market sentiment, profit probability.
-6. **Long-term Investing** - Intrinsic value, price target, earnings projections, revenue/net cash/net profit/debt, business moat, competitors, analyst ratings, buy/sell points.
-7. **Voice** - Tap speaker to hear AI summary (ElevenLabs TTS); tap mic to speak ticker (ElevenLabs STT).
-8. **Plan upgrade** - PayPal (sandbox) checkout for Simple $9 / Advance $29 / Expert $79 per month.
-9. **Push notifications** - Daily top AI pick + earnings-date-approaching reminders (works after deploy + build).
+## Core Modules (5-tab navigation)
+1. **Discover** — Find candidates. Best Opportunities (period-based ranking) + Find Stocks (filter by risk/reward/expiration/sector). Hard eligibility filters applied before ranking.
+2. **Analyze** — Understand one instrument. Options Strategy Lab (Greeks, breakevens, max profit/loss, scenario matrix, assumptions, data provenance) + Day/Swing/Long-term engines.
+3. **Portfolio** — Watchlist with live quotes and sector concentration view.
+4. **Alerts** — Price above/below and earnings-approaching alerts; push notifications on native build.
+5. **Learn** — Strategy playbook (options strategies) + Risk primer + Fundamentals education + Options glossary. Progressive disclosure. ElevenLabs TTS to listen.
 
-## Stack
-- Backend: FastAPI + MongoDB (motor), bcrypt+JWT, Emergent Google OAuth, Claude Sonnet 5.5 via emergentintegrations, ElevenLabs SDK, PayPal REST v2, SuprSend push relay (Emergent).
-- Frontend: Expo 57 / React Native, expo-router, expo-notifications, expo-audio, react-native-webview, @react-native-vector-icons/feather.
-- Market data: MOCKED (realistic sample data) for MVP; swap to Alpha Vantage/Finnhub later.
+## Onboarding
+- Account (email+password or Google) → Plan selection → Expanded questionnaire → Consent
+- Questionnaire captures: objectives (multi), experience, horizon, risk tolerance vs risk capacity, capital range, max single-trade loss, options approval level, preferred sectors, exclusions.
+- Explicit disclosure (no financial advice, model limitations).
 
-## Design
-- Personality: iOS-Native Clean (teal/pine green brand).
-- Theme tokens filled from `/app/design_guidelines.json` into `/app/frontend/src/theme.ts`.
+## Options Strategy Lab Output
+- Full leg details (action, type, strike, exp, qty, theo price)
+- Black-Scholes Greeks per leg + aggregate (delta, gamma, theta/day, vega)
+- Breakevens (list)
+- Max profit, max loss (null for undefined-risk)
+- Probability of profit (model-based estimate)
+- Scenario matrix (P&L across ±10% price moves × 3 time slices)
+- Collateral, APR with/without margin
+- Explicit assumptions (IV, risk-free rate, model name)
+- Data provenance (source, fetched_at)
 
-## Deployment notes
-- Push notifications only work in signed native builds (not Expo Go preview).
-- PayPal sandbox credentials in `.env`; swap to live in production.
-- `EMERGENT_PUSH_KEY=placeholder` is auto-replaced at deploy.
+## Data stack
+- **Finnhub** — real-time US quotes, fundamentals, peers, analyst ratings, earnings dates
+- **Polygon** — daily candles (free tier, delayed 15 min)
+- **Alpha Vantage** — fallback for candles
+- All numbers cached (30s quotes / 1h+ profile/metrics) to respect free-tier limits.
+
+## Integrations
+- **Claude Sonnet 5.5** via Emergent Universal Key — explanation layer (AI as interpreter)
+- **Emergent Push** — daily top pick + earnings reminders (signed native build)
+- **ElevenLabs** — TTS reads AI summaries; STT voice ticker entry
+- **PayPal (sandbox)** — plan upgrades Simple $9 / Advance $29 / Expert $79
+
+## Backend endpoints
+- Auth: register/login/session (Google)/me/logout
+- User: /plan, /questionnaire, /consent
+- Screener: /find-stocks, /best-options, /ticker-options, /stock-analysis, /quote/{ticker}, /stocks
+- Watchlist: add/list/remove
+- Alerts: add/list/remove
+- Learn: /cards (public)
+- Push: /register-push, /push/test, /push/daily-pick, /push/earnings-reminder
+- Voice: /tts/generate, /stt/transcribe
+- PayPal: /create-order, /capture-order, /config
 
 ## Not in MVP
-- Real-time market data.
-- iOS in-app purchase (using PayPal for all plans).
+- Automatic order execution
+- Real option-chain premiums (currently theoretical via Black-Scholes)
+- Broker integrations
+- Paper trading / trade journal / outcome tracking (roadmap Phase 4)
+- Portfolio stress tests / correlation (roadmap Phase 5)
+
+## Testing
+- 21/21 backend tests pass (/app/backend/tests/test_pivot_features.py).

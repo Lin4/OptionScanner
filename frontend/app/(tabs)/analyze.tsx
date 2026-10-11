@@ -1,0 +1,360 @@
+import React, { useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
+import Icon from "@react-native-vector-icons/feather";
+
+import { api } from "@/src/api";
+import { Button } from "@/src/Button";
+import { Input } from "@/src/Input";
+import { ToastHost, toast } from "@/src/Toast";
+import { MetricRow, Badge } from "@/src/parts";
+import { useTTS, useSTT } from "@/src/voice";
+import { colors, spacing, radius } from "@/src/theme";
+
+type Lab = "day" | "swing" | "long" | "options";
+
+export default function Analyze() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const [ticker, setTicker] = useState("");
+  const [lab, setLab] = useState<Lab>("options");
+  const [range, setRange] = useState("month");
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<any>(null);
+  const [onWatchlist, setOnWatchlist] = useState(false);
+
+  const run = async () => {
+    if (!ticker.trim()) { toast("Enter a ticker", "error"); return; }
+    const tk = ticker.trim().toUpperCase();
+    setLoading(true); setData(null);
+    try {
+      if (lab === "options") {
+        const r = await api("/api/screener/ticker-options", { method: "POST", body: JSON.stringify({ ticker: tk, expiration_range: range }) });
+        setData(r.result);
+      } else {
+        const r = await api("/api/screener/stock-analysis", { method: "POST", body: JSON.stringify({ ticker: tk, purpose: lab }) });
+        setData(r.result);
+      }
+    } catch (e: any) { toast(e.message || "Failed", "error"); }
+    finally { setLoading(false); }
+  };
+
+  const addToWatchlist = async () => {
+    if (!data?.ticker) return;
+    try { await api("/api/watchlist/add", { method: "POST", body: JSON.stringify({ ticker: data.ticker }) }); setOnWatchlist(true); toast(`${data.ticker} added`, "success"); }
+    catch (e: any) { toast(e.message || "Failed", "error"); }
+  };
+
+  const labs: { id: Lab; label: string }[] = [
+    { id: "options", label: "Options Lab" },
+    { id: "day", label: "Day" },
+    { id: "swing", label: "Swing" },
+    { id: "long", label: "Long-term" },
+  ];
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.surface }}>
+      <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
+        <Text style={styles.title}>Analyze</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modeRow}>
+          {labs.map((l) => {
+            const active = lab === l.id;
+            return (
+              <Pressable key={l.id} testID={`lab-${l.id}`} onPress={() => { setLab(l.id); setData(null); }} style={[styles.modeChip, active && styles.modeChipActive]}>
+                <Text style={[styles.modeChipText, active && styles.modeChipTextActive]}>{l.label}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <View style={styles.filterCard}>
+          <View style={{ flexDirection: "row", gap: spacing.sm, alignItems: "flex-end" }}>
+            <View style={{ flex: 1 }}>
+              <Input testID="analyze-ticker" label="Ticker" value={ticker} onChangeText={(v) => setTicker(v.toUpperCase())} placeholder="e.g., AAPL" autoCapitalize="characters" />
+            </View>
+            <MicButton onText={(t) => { const m = t.toUpperCase().match(/[A-Z]{1,5}/); if (m) setTicker(m[0]); }} />
+          </View>
+          {lab === "options" ? (
+            <View style={{ marginBottom: spacing.sm }}>
+              <Text style={styles.chipLabel}>Expiration range</Text>
+              <View style={styles.chipsWrap}>
+                {["week", "month", "3months"].map((o) => {
+                  const active = range === o;
+                  return (
+                    <Pressable key={o} testID={`range-${o}`} onPress={() => setRange(o)} style={[styles.chip, active && styles.chipActive]}>
+                      <Text style={[styles.chipText, active && styles.chipTextActive]}>{o}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
+          <Button testID="analyze-run" label={loading ? "Analyzing…" : "Analyze"} onPress={run} loading={loading} />
+        </View>
+
+        {loading && <View style={{ padding: spacing.xl, alignItems: "center" }}><ActivityIndicator color={colors.brandPrimary} /></View>}
+
+        {data && (
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <Pressable onPress={() => router.push(`/ticker/${data.ticker}` as any)}>
+                <Text style={styles.ticker}>{data.ticker}</Text>
+                <Text style={styles.company}>{data.name}</Text>
+              </Pressable>
+              <View style={{ flexDirection: "row", gap: spacing.sm, alignItems: "center" }}>
+                <Text style={styles.price}>${Number(data.price).toFixed(2)}</Text>
+                <Pressable testID="add-watchlist" onPress={addToWatchlist} style={styles.iconBtn}>
+                  <Icon name={onWatchlist ? "check" : "plus"} size={16} color={colors.brandPrimary} />
+                </Pressable>
+              </View>
+            </View>
+            {data.ai_summary ? <SpeakAi text={data.ai_summary} /> : null}
+            {data.data_source ? <ProvenanceBar src={data.data_source} /> : null}
+
+            {lab === "options" ? <OptionsLab r={data} /> : lab === "long" ? <LongForm r={data} /> : <ShortForm r={data} />}
+          </View>
+        )}
+      </ScrollView>
+      <ToastHost />
+    </View>
+  );
+}
+
+function ProvenanceBar({ src }: { src: any }) {
+  const t = src.fetched_at ? new Date(src.fetched_at).toLocaleTimeString() : "live";
+  return (
+    <View style={styles.provenance}>
+      <Icon name="clock" size={11} color={colors.muted} />
+      <Text style={styles.provText}>{src.quote || "Live quote"} • {t}</Text>
+    </View>
+  );
+}
+
+function SpeakAi({ text }: { text: string }) {
+  const { play, stop, loading, playing } = useTTS();
+  return (
+    <View style={styles.aiRow}>
+      <Text style={styles.aiText}>{text}</Text>
+      <Pressable testID="speak-btn" onPress={() => (playing ? stop() : play(text))} style={styles.speakBtn}>
+        <Icon name={loading ? "loader" : playing ? "pause" : "volume-2"} size={14} color={colors.brandPrimary} />
+      </Pressable>
+    </View>
+  );
+}
+
+function MicButton({ onText }: { onText: (t: string) => void }) {
+  const { start, stop, recording, loading } = useSTT(onText);
+  return (
+    <Pressable testID="mic-btn" onPress={() => (recording ? stop() : start())} style={[styles.micBtn, recording && styles.micBtnActive]}>
+      <Icon name={loading ? "loader" : recording ? "square" : "mic"} size={18} color={recording ? colors.onError : colors.brandPrimary} />
+    </Pressable>
+  );
+}
+
+function OptionsLab({ r }: { r: any }) {
+  const [expanded, setExpanded] = useState<"basic" | "greeks" | "scenarios">("basic");
+  return (
+    <View>
+      <View style={styles.strategyRow}>
+        <Badge text={r.strategy} kind="brand" />
+        <Badge text={`exp ${r.expiration}`} kind="info" />
+      </View>
+
+      <Text style={styles.sectionLabel}>Headline</Text>
+      <MetricRow label="Max profit" value={r.max_profit != null ? `$${r.max_profit}` : "—"} color={colors.success} />
+      <MetricRow label="Max loss" value={r.max_loss != null ? `$${r.max_loss}` : "undefined"} color={colors.error} />
+      <MetricRow label="Breakevens" value={(r.breakevens || []).map((b: number) => `$${b}`).join(" / ") || "—"} />
+      <MetricRow label="Probability of profit" value={`${r.pop}%`} color={colors.success} />
+      <MetricRow label="Premium (net)" value={`${r.premium_net > 0 ? "+" : ""}$${r.premium_net}`} />
+      <MetricRow label="Collateral" value={`$${r.collateral}`} />
+      <MetricRow label="APR" value={`${r.annual_pct_no_margin}%`} color={colors.success} />
+
+      <View style={styles.subTabs}>
+        {(["basic", "greeks", "scenarios"] as const).map((t) => (
+          <Pressable key={t} testID={`sub-${t}`} onPress={() => setExpanded(t)} style={[styles.subTab, expanded === t && styles.subTabActive]}>
+            <Text style={[styles.subTabText, expanded === t && styles.subTabTextActive]}>
+              {t === "basic" ? "Legs" : t === "greeks" ? "Greeks" : "Scenarios"}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {expanded === "basic" && (
+        <View>
+          {(r.legs || []).map((l: any, i: number) => (
+            <View key={i} style={styles.legRow}>
+              <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+                <Badge text={l.action} kind={l.action === "Buy" ? "success" : "error"} />
+                <Text style={styles.legText}>{l.type} @ ${l.strike}</Text>
+              </View>
+              <Text style={styles.legTheo}>theo ${l.theo_price}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {expanded === "greeks" && (
+        <View>
+          <MetricRow label="Delta" value={String(r.greeks?.delta ?? "—")} />
+          <MetricRow label="Gamma" value={String(r.greeks?.gamma ?? "—")} />
+          <MetricRow label="Theta (per day)" value={String(r.greeks?.theta ?? "—")} />
+          <MetricRow label="Vega" value={String(r.greeks?.vega ?? "—")} />
+          <MetricRow label="IV assumed" value={`${((r.iv_assumed ?? 0) * 100).toFixed(0)}%`} />
+          <Text style={styles.disclaimer}>Theoretical values from Black-Scholes with the IV assumption above. Real quotes may differ.</Text>
+        </View>
+      )}
+
+      {expanded === "scenarios" && (
+        <View>
+          <Text style={styles.disclaimer}>Estimated P&L (per contract) across price moves and time elapsed.</Text>
+          {(r.scenario_matrix || []).map((row: any, i: number) => (
+            <View key={i} style={styles.scenarioRow}>
+              <Text style={styles.scenarioLabel}>Day {row.days_elapsed}</Text>
+              <View style={styles.scenarioCells}>
+                {Object.entries(row.pnl).map(([mv, p]: any) => (
+                  <View key={mv} style={styles.scenarioCell}>
+                    <Text style={styles.scenarioMv}>{mv}</Text>
+                    <Text style={[styles.scenarioPnl, { color: p >= 0 ? colors.success : colors.error }]}>${p}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {r.risk_note ? <Text style={styles.rationale}>Risk: {r.risk_note}</Text> : null}
+      {r.entry_tip ? <Text style={styles.rationale}>Tip: {r.entry_tip}</Text> : null}
+      {r.assumptions ? (
+        <Text style={styles.disclaimer}>Assumptions: {r.assumptions.model} • IV {r.assumptions.iv_assumed_pct}% • risk-free {r.assumptions.risk_free_rate_pct}%.</Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ShortForm({ r }: { r: any }) {
+  return (
+    <View>
+      <View style={{ flexDirection: "row", gap: 6, marginVertical: spacing.sm }}>
+        <Badge text={r.verdict || "HOLD"} kind={r.verdict === "BUY" ? "success" : r.verdict === "SELL" ? "error" : "warn"} />
+        {r.confidence ? <Badge text={`${r.confidence} conf.`} kind="info" /> : null}
+      </View>
+      <Text style={styles.sectionLabel}>Entry plan</Text>
+      <MetricRow label="Buy point" value={`$${r.buy_point}`} color={colors.success} />
+      <MetricRow label="Sell point" value={`$${r.sell_point}`} color={colors.brandPrimary} />
+      <MetricRow label="Stop loss" value={`$${r.stop_loss}`} color={colors.error} />
+      <MetricRow label="Reward / Risk" value={`${((r.sell_point - r.buy_point) / Math.max(0.01, r.buy_point - r.stop_loss)).toFixed(2)}x`} />
+      <Text style={styles.sectionLabel}>Technicals</Text>
+      <MetricRow label="SMA 20 / 50" value={`$${r.sma_20} / $${r.sma_50}`} />
+      <MetricRow label="RSI (14)" value={String(r.rsi)} />
+      <MetricRow label="Support / Resistance" value={`$${r.support} / $${r.resistance}`} />
+      <MetricRow label="Market sentiment" value={r.market_sentiment} />
+      <Text style={styles.sectionLabel}>Patterns</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+        {(r.candlestick_patterns || []).map((p: string) => <Badge key={p} text={p} kind="brand" />)}
+        {(r.chart_patterns || []).map((p: string) => <Badge key={p} text={p} kind="success" />)}
+      </View>
+    </View>
+  );
+}
+
+function LongForm({ r }: { r: any }) {
+  return (
+    <View>
+      <View style={{ flexDirection: "row", gap: 6, marginVertical: spacing.sm }}>
+        <Badge text={r.verdict || "HOLD"} kind={r.verdict === "BUY" ? "success" : r.verdict === "SELL" ? "error" : "warn"} />
+        {r.confidence ? <Badge text={`${r.confidence} conf.`} kind="info" /> : null}
+      </View>
+      <Text style={styles.sectionLabel}>Valuation</Text>
+      <MetricRow label="Intrinsic (range mid)" value={`$${r.intrinsic_value}`} />
+      <MetricRow label="Price target" value={`$${r.price_target}`} color={colors.success} />
+      <MetricRow label="Buy point" value={`$${r.buy_point}`} color={colors.success} />
+      <MetricRow label="Sell point" value={`$${r.sell_point}`} color={colors.brandPrimary} />
+      {r.pe_ratio != null ? <MetricRow label="P/E (TTM)" value={Number(r.pe_ratio).toFixed(2)} /> : null}
+      {r.eps_ttm != null ? <MetricRow label="EPS (TTM)" value={`$${Number(r.eps_ttm).toFixed(2)}`} /> : null}
+      {r.roe != null ? <MetricRow label="ROE" value={`${Number(r.roe).toFixed(1)}%`} /> : null}
+      {r.revenue_growth_pct != null ? <MetricRow label="Rev growth" value={`${Number(r.revenue_growth_pct).toFixed(1)}%`} /> : null}
+      {r.beta != null ? <MetricRow label="Beta" value={Number(r.beta).toFixed(2)} /> : null}
+      <Text style={styles.sectionLabel}>Earnings</Text>
+      <MetricRow label="Next date" value={r.earnings_date || "TBA"} />
+      {r.earnings_eps_estimate != null ? <MetricRow label="EPS estimate" value={`$${Number(r.earnings_eps_estimate).toFixed(2)}`} /> : null}
+      <Text style={styles.sectionLabel}>Business</Text>
+      <MetricRow label="Moat" value={r.business_moat} />
+      {r.moat_note ? <Text style={styles.rationale}>{r.moat_note}</Text> : null}
+      <Text style={styles.sectionLabel}>Competitors</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+        {(r.competitors || []).map((c: string) => <Badge key={c} text={c} kind="brand" />)}
+      </View>
+      <Text style={styles.sectionLabel}>Analyst ratings</Text>
+      <View style={styles.ratings}>
+        <View style={[styles.ratingBar, { flex: Math.max(r.analyst_ratings?.buy || 0, 1), backgroundColor: colors.success }]}><Text style={styles.ratingText}>Buy {r.analyst_ratings?.buy || 0}</Text></View>
+        <View style={[styles.ratingBar, { flex: Math.max(r.analyst_ratings?.hold || 0, 1), backgroundColor: colors.warning }]}><Text style={styles.ratingText}>Hold {r.analyst_ratings?.hold || 0}</Text></View>
+        <View style={[styles.ratingBar, { flex: Math.max(r.analyst_ratings?.sell || 0, 1), backgroundColor: colors.error }]}><Text style={styles.ratingText}>Sell {r.analyst_ratings?.sell || 0}</Text></View>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  header: { paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  title: { fontSize: 22, fontWeight: "800", color: colors.onSurface },
+  modeRow: { gap: spacing.sm, paddingTop: spacing.md, paddingRight: spacing.lg },
+  modeChip: { height: 36, paddingHorizontal: spacing.md, borderRadius: radius.pill, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center", flexShrink: 0, borderWidth: 1, borderColor: colors.border },
+  modeChipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  modeChipText: { color: colors.onSurfaceSecondary, fontWeight: "700", fontSize: 13 },
+  modeChipTextActive: { color: colors.onBrandPrimary },
+
+  scroll: { padding: spacing.lg, paddingBottom: 100 },
+  filterCard: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.lg, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.lg },
+  chipLabel: { fontSize: 12, color: colors.muted, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1, marginBottom: spacing.sm },
+  chipsWrap: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  chip: { paddingHorizontal: spacing.md, height: 32, borderRadius: radius.pill, backgroundColor: colors.surfaceTertiary, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  chipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  chipText: { color: colors.onSurface, fontSize: 12, fontWeight: "600" },
+  chipTextActive: { color: colors.onBrandPrimary },
+  micBtn: { width: 48, height: 48, borderRadius: radius.pill, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center", marginBottom: spacing.lg, borderWidth: 1, borderColor: colors.border },
+  micBtnActive: { backgroundColor: colors.error, borderColor: colors.error },
+
+  card: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.lg },
+  cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
+  ticker: { fontSize: 22, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
+  company: { fontSize: 12, color: colors.muted },
+  price: { fontSize: 18, fontWeight: "800", color: colors.onSurface, fontVariant: ["tabular-nums"] },
+  iconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.brandSecondary, alignItems: "center", justifyContent: "center" },
+
+  provenance: { flexDirection: "row", alignItems: "center", gap: 6, marginVertical: spacing.sm },
+  provText: { fontSize: 11, color: colors.muted },
+
+  aiRow: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-start", backgroundColor: colors.brandSecondary, padding: spacing.sm, borderRadius: radius.md, marginVertical: spacing.sm },
+  aiText: { flex: 1, color: colors.onBrandSecondary, fontSize: 13, lineHeight: 18 },
+  speakBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
+
+  strategyRow: { flexDirection: "row", gap: 6, marginVertical: spacing.sm },
+  sectionLabel: { fontSize: 11, color: colors.muted, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1, marginTop: spacing.md, marginBottom: 4 },
+  disclaimer: { color: colors.muted, fontSize: 11, fontStyle: "italic", marginTop: 4, lineHeight: 15 },
+  rationale: { fontSize: 12, color: colors.onSurfaceSecondary, marginTop: spacing.sm, fontStyle: "italic" },
+
+  subTabs: { flexDirection: "row", gap: spacing.xs, marginTop: spacing.md, marginBottom: spacing.sm },
+  subTab: { flex: 1, height: 36, borderRadius: radius.md, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
+  subTabActive: { backgroundColor: colors.brandPrimary },
+  subTabText: { color: colors.onSurface, fontWeight: "700", fontSize: 12 },
+  subTabTextActive: { color: colors.onBrandPrimary },
+
+  legRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6 },
+  legText: { color: colors.onSurface, fontWeight: "600", fontSize: 13 },
+  legTheo: { color: colors.muted, fontSize: 12, fontVariant: ["tabular-nums"] },
+
+  scenarioRow: { marginVertical: spacing.sm },
+  scenarioLabel: { fontSize: 11, color: colors.muted, fontWeight: "700", textTransform: "uppercase", marginBottom: 4 },
+  scenarioCells: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
+  scenarioCell: { flexBasis: "13%", flexGrow: 1, backgroundColor: colors.surfaceSecondary, padding: 6, borderRadius: 8, borderWidth: 1, borderColor: colors.border, alignItems: "center" },
+  scenarioMv: { fontSize: 10, color: colors.muted, fontVariant: ["tabular-nums"] },
+  scenarioPnl: { fontSize: 11, fontWeight: "700", fontVariant: ["tabular-nums"] },
+
+  ratings: { flexDirection: "row", height: 32, borderRadius: radius.md, overflow: "hidden", gap: 2 },
+  ratingBar: { alignItems: "center", justifyContent: "center" },
+  ratingText: { color: "#FFFFFF", fontWeight: "700", fontSize: 11 },
+});
