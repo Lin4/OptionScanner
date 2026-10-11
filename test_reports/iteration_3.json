@@ -1,0 +1,48 @@
+{
+  "summary": "OptiScreen real-time market data integration (Finnhub + Polygon + Alpha Vantage) tested end-to-end. 21/21 pytest cases pass when run sequentially. Verified LIVE prices across every screener endpoint — no stale mock constants (232.14 / 428.90) returned. /api/screener/quote/AAPL returns full Finnhub shape {price, change, change_pct, high, low, open, prev_close}, 401 without token, 404 for ZZZZZZZZ, and TTL cache (30s) returns identical price on back-to-back calls. /api/screener/best-options?period=week&limit=3: each result has real Finnhub price, strategy from the 6-strategy pool, >=1 legs, premium, pop, annual_pct_no_margin, and a sparkline whose values hover near the real price. /api/screener/find-stocks (Tech, high/high, week): only returns tickers from the Tech sector of UNIVERSE, each with real price + Claude-generated bias and rationale. /api/screener/ticker-options AAPL/month: real price, ai_summary, risk_note, entry_tip all populated; unknown ticker correctly 404s. /api/screener/stock-analysis purpose=swing TSLA: real price, 60 candles (OHLC), buy_point/sell_point/stop_loss anchored within +/-50% of real price, sma_20/sma_50 > 0, rsi in [0,100], market_sentiment in {Bullish,Bearish,Neutral}, verdict in {BUY,SELL,HOLD}. /api/screener/stock-analysis purpose=long MSFT: real pe_ratio > 0, eps_ttm > 0, competitors list contains real Finnhub peers (e.g. AAPL/GOOGL/ORCL/CRM/IBM — not random), analyst_ratings has integer buy/hold/sell summing > 0, earnings_date is ISO string. Auth guard verified on every screener endpoint. Regression: /auth/login, /user/plan, /tts/generate, /paypal/create-order all still work. No _id leaks observed anywhere.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/screener/* (all upstream calls)", "issue": "Polygon free tier (5 req/min) and Alpha Vantage (25 req/day) rate limits are hit easily when 2+ screener endpoints run in parallel. Observed 429 responses from Polygon for XOM/MSFT/META/GOOGL/AMD/NVDA/TSLA during parallel test runs. When BOTH Polygon AND Alpha Vantage fallbacks fail, get_candles returns [] -> stock-analysis returns an empty candles list but still 200 (not 404). Not a code bug; expected degradation per agent note. Tests pass when run sequentially after a ~60s cooldown."},
+      {"endpoint": "finnhub premium endpoints", "issue": "price-target and news-sentiment return 403 'You don\\'t have access to this resource' on the configured Finnhub free-tier key. market.py handles this gracefully (returns None) and server.py falls back to price*1.15 for price_target and 'Neutral' for sentiment, but data richness suffers. Not blocking."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_market_realtime.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/market_realtime_results.xml"
+  ],
+  "action_items": [
+    "Optional: when both Polygon AND Alpha Vantage return no candles for a known Finnhub-supported ticker, consider returning HTTP 503 or a cached degraded response in /screener/stock-analysis so the UI can show a 'market data temporarily unavailable' banner instead of a 200 with empty candles. Current behavior is a 200 with 'candles': []. UI must handle empty candle arrays.",
+    "Optional: Finnhub premium endpoints (price-target, news-sentiment) are 403 on this key. Either upgrade the Finnhub plan or wire an alternative (e.g., FMP, Yahoo via rapidapi) for price target & sentiment to improve long-term thesis output.",
+    "Optional: UNIVERSE in market.py is hard-coded (15 tickers). Consider loading from a /data/universe.json or an env override so adding tickers doesn't require a code deploy.",
+    "No action required for test-coverage goals — all 21 real-time test cases pass sequentially; two early parallel-mode failures were pure upstream rate limits (Polygon 429) which the agent-to-agent note explicitly whitelists."
+  ],
+  "critical_code_review_comments": [
+    "market.py:68-86 get_quote — uses 30s TTL cache keyed by ticker. Correctly skips cache when Finnhub returns c<=0 (unknown ticker) so 404 behavior is preserved. Good.",
+    "market.py:90-133 get_candles — Polygon-first + Alpha Vantage fallback is correct, but silently returns [] when BOTH fail. server.py:447-497 does not treat empty candles as an error for swing/day analysis — sma_20/sma_50/rsi all become None and are coerced to price via `or round(price,2)`, which hides the degradation. Recommend logging a warning and either returning 503 or a 'data_degraded': true flag so the FE can tell real indicators from fallbacks.",
+    "server.py:201-213 enrich_universe_pick — correctly swallows errors per-ticker and returns None, so best-options / find-stocks degrade gracefully if a few tickers 429. Good.",
+    "server.py:559-561 live_quote — correctly returns 404 when Finnhub c=0 (unknown ticker). Good.",
+    "server.py:447-453 stock-analysis — only returns 404 when bundle['price'] is None (Finnhub quote failed). It does NOT 404 when candles are empty — resulting in a 200 with no chartable data. See action item.",
+    "market.py:17-19 — API keys read at module import; if .env rotates at runtime the process must restart. Acceptable but worth documenting.",
+    "server.py:217-230 call_claude — swallows all exceptions and returns ''. extract_json then returns None, and callers fall back to default strings. This means an AI outage silently gives generic 'Top yield plays this period.' / 'Durable competitive advantage.' text with no indication to the client. Consider surfacing an 'ai_available': false flag."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_market_realtime.py (new, 21 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% sequential (21/21). ~90% parallel (19/21) due to Polygon rate limits — not a code bug.",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "Reused existing trader@optiscreen.app / TestPass123! seed account. No new persistent data created. One sandbox PayPal order per regression run (ephemeral).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Suite lives at /app/backend/tests/test_market_realtime.py. Run sequentially (python -m pytest -o addopts='' backend/tests/test_market_realtime.py) to avoid Polygon 5/min rate limit. 30s in-memory cache on quotes/candles means a second run inside a minute will be fast and limit-free. STALE_MOCK_PRICES guard proves no mock constants (232.14/428.90) are returned. If future tests want to add tickers outside UNIVERSE, remember stock-analysis uses fetch_stock_bundle which requires Finnhub to recognize the symbol — otherwise it 404s.",
+  "rca_of_issue": "No bugs found. Two parallel-mode failures observed on first run: (1) test_tts_generate was a test-script bug — assertion checked for key 'audio' but response uses 'audio_url'; fixed in-place. (2) test_swing_tsla saw candles=[] because the parallel test run burned Polygon's 5-req/min budget on earlier calls (XOM/MSFT/META/GOOGL/AMD/NVDA/TSLA all 429) and Alpha Vantage fallback also exhausted. After a 60-75s cooldown, TSLA swing passes with 60 candles. Per the agent-to-agent context note, upstream rate limits are explicitly whitelisted and should NOT be treated as a code bug. Mitigation already in place: cache (30s quotes, 5m candles) + Polygon→Alpha Vantage fallback + per-ticker exception swallowing in enrich_universe_pick."
+}

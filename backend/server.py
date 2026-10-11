@@ -10,6 +10,7 @@ import uuid
 import random
 import json
 import re
+import asyncio
 import bcrypt
 import jwt as pyjwt
 import httpx
@@ -25,6 +26,10 @@ from integrations import (
     RegisterPushBody, register_push_token, send_push,
     TTSReq, tts_generate, stt_transcribe,
     paypal_create_order, paypal_capture_order, PLAN_PRICES,
+)
+from market import (
+    UNIVERSE, UNIVERSE_INDEX, fetch_stock_bundle, get_quote, get_candles,
+    sma as calc_sma, rsi as calc_rsi, support_resistance, detect_candle_patterns, detect_chart_patterns,
 )
 
 mongo_url = os.environ['MONGO_URL']
@@ -138,56 +143,23 @@ async def get_user_from_token(authorization: Optional[str]) -> Dict[str, Any]:
     return user
 
 
-# ========== MOCK MARKET DATA ==========
-STOCKS = [
-    {"ticker": "AAPL", "name": "Apple Inc.", "sector": "Tech", "price": 232.14},
-    {"ticker": "MSFT", "name": "Microsoft Corp.", "sector": "Tech", "price": 428.90},
-    {"ticker": "NVDA", "name": "NVIDIA Corp.", "sector": "Tech", "price": 142.56},
-    {"ticker": "TSLA", "name": "Tesla Inc.", "sector": "Consumer Discretionary", "price": 348.72},
-    {"ticker": "AMZN", "name": "Amazon.com Inc.", "sector": "Consumer Discretionary", "price": 215.33},
-    {"ticker": "META", "name": "Meta Platforms", "sector": "Tech", "price": 612.44},
-    {"ticker": "GOOGL", "name": "Alphabet Inc.", "sector": "Tech", "price": 192.08},
-    {"ticker": "JPM", "name": "JPMorgan Chase", "sector": "Financials", "price": 248.19},
-    {"ticker": "XOM", "name": "Exxon Mobil", "sector": "Energy", "price": 115.26},
-    {"ticker": "PFE", "name": "Pfizer Inc.", "sector": "Healthcare", "price": 26.44},
-    {"ticker": "DIS", "name": "Walt Disney", "sector": "Consumer Discretionary", "price": 112.08},
-    {"ticker": "AMD", "name": "Advanced Micro Devices", "sector": "Tech", "price": 128.72},
-    {"ticker": "SPY", "name": "S&P 500 ETF", "sector": "Index", "price": 598.33},
-    {"ticker": "COST", "name": "Costco Wholesale", "sector": "Consumer Staples", "price": 962.11},
-    {"ticker": "BA", "name": "Boeing Co.", "sector": "Industrials", "price": 178.44},
-]
-
+# ========== MARKET HELPERS ==========
 STRATEGIES = ["Cash Secured Put", "Covered Call", "Bull Put Spread", "Iron Condor", "Bear Call Spread", "Short Strangle"]
 
-def gen_sparkline(base: float) -> List[float]:
-    """Generate 20-point sparkline with mild walk."""
-    pts = []
-    cur = base * 0.95
-    for _ in range(20):
-        cur += (random.random() - 0.47) * base * 0.015
-        pts.append(round(cur, 2))
-    return pts
+def sparkline_from_candles(candles: List[Dict], points: int = 20) -> List[float]:
+    if not candles:
+        return []
+    closes = [c["c"] for c in candles[-points:]]
+    return [round(float(c), 2) for c in closes]
 
-def gen_candles(base: float, n: int = 30) -> List[Dict[str, float]]:
-    out = []
-    cur = base * 0.9
-    for i in range(n):
-        o = cur
-        c = cur + (random.random() - 0.48) * base * 0.025
-        h = max(o, c) + random.random() * base * 0.01
-        l = min(o, c) - random.random() * base * 0.01
-        out.append({"o": round(o, 2), "h": round(h, 2), "l": round(l, 2), "c": round(c, 2)})
-        cur = c
-    return out
-
-def gen_option_strategy(stock: Dict, expiration: str) -> Dict:
-    price = stock["price"]
+def build_option_strategy(ticker: str, name: str, sector: str, price: float, expiration: str, sparkline: List[float]) -> Dict:
+    """Build an option strategy priced around the REAL current price."""
     strat = random.choice(STRATEGIES)
     exp_days = {"daily": 1, "day": 1, "week": 7, "month": 30, "3months": 90, "custom": 14}.get(expiration, 30)
     exp_date = (now_utc() + timedelta(days=exp_days)).strftime("%Y-%m-%d")
-    pop = random.randint(55, 92)
-    premium = round(price * random.uniform(0.005, 0.025), 2)
-    collateral = round(price * random.uniform(0.9, 1.1) * 100, 2)
+    pop = random.randint(60, 90)
+    premium = round(price * random.uniform(0.008, 0.028), 2)
+    collateral = round(price * 100, 2)
     collat_margin = round(collateral * 0.25, 2)
     annual_pct_collat = round((premium * 100) / collateral * (365 / exp_days) * 100, 2)
     annual_pct_margin = round((premium * 100) / collat_margin * (365 / exp_days) * 100, 2)
@@ -219,22 +191,26 @@ def gen_option_strategy(stock: Dict, expiration: str) -> Dict:
             {"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date},
         ]
     return {
-        "ticker": stock["ticker"],
-        "name": stock["name"],
-        "sector": stock["sector"],
-        "price": price,
-        "strategy": strat,
-        "legs": legs,
-        "premium": premium,
-        "expiration": exp_date,
-        "expiration_days": exp_days,
-        "pop": pop,
-        "collateral": collateral,
-        "collateral_margin": collat_margin,
-        "annual_pct_no_margin": annual_pct_collat,
-        "annual_pct_margin": annual_pct_margin,
-        "sparkline": gen_sparkline(price),
+        "ticker": ticker, "name": name, "sector": sector, "price": round(price, 2),
+        "strategy": strat, "legs": legs, "premium": premium, "expiration": exp_date,
+        "expiration_days": exp_days, "pop": pop, "collateral": collateral,
+        "collateral_margin": collat_margin, "annual_pct_no_margin": annual_pct_collat,
+        "annual_pct_margin": annual_pct_margin, "sparkline": sparkline,
     }
+
+async def enrich_universe_pick(ticker: str, expiration: str) -> Optional[Dict]:
+    """Fetch REAL quote + a short sparkline for a universe ticker, return option strategy."""
+    try:
+        async with httpx.AsyncClient() as client:
+            q, c = await asyncio.gather(get_quote(client, ticker), get_candles(client, ticker, 30))
+        if not q or not q.get("price"):
+            return None
+        info = UNIVERSE_INDEX.get(ticker, {"name": ticker, "sector": "Unknown"})
+        spark = sparkline_from_candles(c) if c else []
+        return build_option_strategy(ticker, info.get("name", ticker), info.get("sector", "Unknown"), q["price"], expiration, spark)
+    except Exception as e:
+        logger.warning(f"enrich {ticker} failed: {e}")
+        return None
 
 
 # ========== AI ==========
@@ -392,33 +368,33 @@ async def save_consent(req: ConsentReq, authorization: Optional[str] = Header(de
 @api_router.post("/screener/find-stocks")
 async def find_stocks(req: FindStockReq, authorization: Optional[str] = Header(default=None)):
     await get_user_from_token(authorization)
-    pool = STOCKS[:]
+    pool = UNIVERSE[:]
     if req.sectors:
         pool = [s for s in pool if s["sector"] in req.sectors]
     if not pool:
-        pool = STOCKS[:]
+        pool = UNIVERSE[:]
     random.shuffle(pool)
-    picks = pool[: req.limit]
+    # Fetch more than needed in parallel; keep first `limit` that return quotes.
+    candidates = pool[: min(len(pool), max(req.limit * 2, req.limit))]
+    enriched = await asyncio.gather(*[enrich_universe_pick(c["ticker"], req.expiration) for c in candidates])
+    results = [r for r in enriched if r][: req.limit]
 
     system = "You are a sharp options strategist. Reply with ONLY valid JSON, no markdown."
-    tickers = [p["ticker"] for p in picks]
+    tickers = [r["ticker"] for r in results]
     prompt = (
         f"User seeks optionable stocks matching: risk={req.risk}, reward={req.reward}, "
         f"expiration={req.expiration}, sectors={req.sectors or 'any'}.\n"
-        f"For each ticker in {tickers}, give a 1-sentence rationale and a bullish/bearish/neutral bias. "
+        f"For each ticker in {tickers} (real quotes: {[(r['ticker'], r['price']) for r in results]}), "
+        f"give a 1-sentence rationale and a bullish/bearish/neutral bias. "
         f'Reply JSON: {{"picks":[{{"ticker":"XX","bias":"bullish","rationale":"..."}}]}}'
     )
     txt = await call_claude(system, prompt)
     ai = extract_json(txt) or {"picks": []}
     ai_map = {p.get("ticker"): p for p in ai.get("picks", [])}
-
-    results = []
-    for s in picks:
-        opt = gen_option_strategy(s, req.expiration)
-        ai_p = ai_map.get(s["ticker"], {})
-        opt["bias"] = ai_p.get("bias", "neutral")
-        opt["rationale"] = ai_p.get("rationale", f"Fits {req.risk} risk / {req.reward} reward profile.")
-        results.append(opt)
+    for r in results:
+        a = ai_map.get(r["ticker"], {})
+        r["bias"] = a.get("bias", "neutral")
+        r["rationale"] = a.get("rationale", f"Fits {req.risk} risk / {req.reward} reward profile.")
     return {"results": results}
 
 @api_router.post("/screener/best-options")
@@ -426,15 +402,16 @@ async def best_options(req: BestOptionsReq, authorization: Optional[str] = Heade
     await get_user_from_token(authorization)
     period_map = {"day": "daily", "week": "week", "month": "month", "custom": "custom"}
     exp = period_map.get(req.period, "week")
-    picks = random.sample(STOCKS, min(req.limit, len(STOCKS)))
-    results = [gen_option_strategy(s, exp) for s in picks]
-    # Sort by annual pct desc so "best" ranked first
+    pool = random.sample(UNIVERSE, min(max(req.limit * 2, req.limit), len(UNIVERSE)))
+    enriched = await asyncio.gather(*[enrich_universe_pick(c["ticker"], exp) for c in pool])
+    results = [r for r in enriched if r][: req.limit]
     results.sort(key=lambda r: r["annual_pct_no_margin"], reverse=True)
 
     system = "You are an options strategist. Reply with ONLY valid JSON."
     prompt = (
-        f"For a {req.period} horizon, rank the top strategies for {[r['ticker'] for r in results]} "
-        f'and provide a 1-line summary. JSON: {{"summary":"...","top_pick":"TICKER"}}'
+        f"For a {req.period} horizon with REAL current prices {[(r['ticker'], r['price']) for r in results]}, "
+        f"pick the top ticker and summarize in one line. "
+        f'JSON: {{"summary":"...","top_pick":"TICKER"}}'
     )
     txt = await call_claude(system, prompt)
     ai = extract_json(txt) or {}
@@ -444,14 +421,19 @@ async def best_options(req: BestOptionsReq, authorization: Optional[str] = Heade
 async def ticker_options(req: TickerOptionsReq, authorization: Optional[str] = Header(default=None)):
     await get_user_from_token(authorization)
     tk = req.ticker.upper()
-    stock = next((s for s in STOCKS if s["ticker"] == tk), None)
-    if not stock:
-        stock = {"ticker": tk, "name": tk, "sector": "Unknown", "price": round(random.uniform(50, 400), 2)}
-    opt = gen_option_strategy(stock, req.expiration_range)
+    opt = await enrich_universe_pick(tk, req.expiration_range)
+    if not opt:
+        # Try outside universe
+        async with httpx.AsyncClient() as client:
+            q, c = await asyncio.gather(get_quote(client, tk), get_candles(client, tk, 30))
+        if not q or not q.get("price"):
+            raise HTTPException(status_code=404, detail=f"No live quote found for {tk}")
+        spark = sparkline_from_candles(c) if c else []
+        opt = build_option_strategy(tk, tk, "Unknown", q["price"], req.expiration_range, spark)
 
     system = "You are an options strategist. Reply with ONLY valid JSON, no markdown."
     prompt = (
-        f"Analyze {tk} for {req.expiration_range} options play. "
+        f"Analyze {tk} at REAL price ${opt['price']} for {req.expiration_range} options play. "
         f"Give a strategy recommendation summary. "
         f'JSON: {{"summary":"...","risk_note":"...","entry_tip":"..."}}'
     )
@@ -466,70 +448,93 @@ async def ticker_options(req: TickerOptionsReq, authorization: Optional[str] = H
 async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = Header(default=None)):
     await get_user_from_token(authorization)
     tk = req.ticker.upper()
-    stock = next((s for s in STOCKS if s["ticker"] == tk), None)
-    if not stock:
-        stock = {"ticker": tk, "name": tk, "sector": "Unknown", "price": round(random.uniform(50, 400), 2)}
-    price = stock["price"]
-    candles = gen_candles(price, 30)
+    bundle = await fetch_stock_bundle(tk)
+    if not bundle.get("price"):
+        raise HTTPException(status_code=404, detail=f"No live quote found for {tk}")
+
+    price = bundle["price"]
+    candles = bundle["candles"]
+    sma_20 = bundle["sma_20"] or round(price, 2)
+    sma_50 = bundle["sma_50"] or round(price, 2)
+    rsi_val = bundle["rsi"] or 50
+    sup = bundle["support"] or round(price * 0.94, 2)
+    res = bundle["resistance"] or round(price * 1.07, 2)
 
     if req.purpose in ("day", "swing"):
-        buy = round(price * random.uniform(0.97, 0.99), 2)
-        sell = round(price * random.uniform(1.03, 1.08), 2)
-        stop = round(price * random.uniform(0.93, 0.96), 2)
-        patterns = random.sample(
-            ["Bullish Engulfing", "Double Bottom", "Golden Cross", "Hammer", "Ascending Triangle", "Flag"],
-            k=3,
-        )
+        # Derive buy/sell/stop from real levels
+        atr_proxy = (res - sup) / 10 if res > sup else price * 0.01
+        buy = round(max(sup, price - atr_proxy), 2)
+        sell = round(min(res, price + atr_proxy * 2), 2)
+        stop = round(sup * 0.97, 2)
+        sent = bundle.get("news_sentiment") or {}
+        if sent and sent.get("bullish", 0) > sent.get("bearish", 0):
+            market_sentiment = "Bullish"
+        elif sent and sent.get("bearish", 0) > sent.get("bullish", 0):
+            market_sentiment = "Bearish"
+        else:
+            market_sentiment = "Neutral"
         resp = {
-            "ticker": tk, "name": stock["name"], "price": price,
+            "ticker": tk, "name": bundle["name"], "price": price,
             "purpose": req.purpose,
             "candles": candles,
             "buy_point": buy, "sell_point": sell, "stop_loss": stop,
-            "support": round(price * 0.94, 2), "resistance": round(price * 1.07, 2),
-            "sma_20": round(price * random.uniform(0.97, 1.02), 2),
-            "sma_50": round(price * random.uniform(0.94, 1.05), 2),
-            "rsi": random.randint(35, 72),
-            "short_float_pct": round(random.uniform(1.2, 15.4), 2),
-            "short_interest": round(random.uniform(5, 80), 1),
-            "option_volume": random.randint(50000, 2500000),
-            "candlestick_patterns": patterns,
-            "chart_patterns": random.sample(["Double Bottom", "Head & Shoulders", "Cup & Handle", "Bull Flag"], k=2),
-            "market_sentiment": random.choice(["Bullish", "Neutral", "Bearish"]),
-            "intrinsic_value": round(price * random.uniform(0.85, 1.15), 2),
-            "profit_probability": random.randint(55, 85),
+            "support": sup, "resistance": res,
+            "sma_20": sma_20, "sma_50": sma_50, "rsi": rsi_val,
+            "short_float_pct": None,  # premium data, left null on free tier
+            "short_interest": None,
+            "option_volume": None,
+            "candlestick_patterns": bundle["candlestick_patterns"],
+            "chart_patterns": bundle["chart_patterns"],
+            "market_sentiment": market_sentiment,
+            "intrinsic_value": bundle.get("price_target") or round(price, 2),
+            "profit_probability": max(50, min(90, int(50 + (sma_20 - sma_50) / price * 500 if sma_20 and sma_50 else 50))),
         }
         system = "You are a short-term trading analyst. Reply ONLY valid JSON."
         prompt = (
-            f"Analyze {tk} for {req.purpose} trading at ${price}. "
+            f"Analyze {tk} for {req.purpose} trading. Real-time data: price ${price}, SMA20 ${sma_20}, SMA50 ${sma_50}, "
+            f"RSI {rsi_val}, support ${sup}, resistance ${res}, trend {bundle['trend']}, patterns {bundle['candlestick_patterns']}. "
             f'JSON: {{"summary":"...","verdict":"BUY|SELL|HOLD","confidence":"low|med|high"}}'
         )
     else:
+        metrics = bundle.get("metrics") or {}
+        earnings = bundle.get("earnings") or {}
+        pt = bundle.get("price_target")
+        eps = metrics.get("eps_ttm") or 0
+        pe = metrics.get("pe_ttm") or 0
+        intrinsic = round((pt or price * (1.1 if (metrics.get("revenue_growth_ttm") or 0) > 10 else 1.0)), 2)
         resp = {
-            "ticker": tk, "name": stock["name"], "price": price,
+            "ticker": tk, "name": bundle["name"], "price": price,
             "purpose": "long",
             "candles": candles,
-            "intrinsic_value": round(price * random.uniform(0.85, 1.25), 2),
-            "price_target": round(price * random.uniform(1.1, 1.4), 2),
-            "stock_trend": random.choice(["Uptrend", "Downtrend", "Sideways"]),
-            "earnings_date": (now_utc() + timedelta(days=random.randint(5, 60))).strftime("%Y-%m-%d"),
-            "earnings_eps_estimate": round(random.uniform(0.5, 4.5), 2),
-            "revenue_billions": round(random.uniform(5, 400), 2),
-            "net_cash_billions": round(random.uniform(-50, 200), 2),
-            "net_profit_billions": round(random.uniform(-10, 100), 2),
-            "debt_billions": round(random.uniform(0, 200), 2),
-            "business_moat": random.choice(["Wide", "Narrow", "None"]),
-            "competitors": random.sample(["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"], k=3),
-            "analyst_ratings": {
-                "buy": random.randint(5, 25),
-                "hold": random.randint(1, 10),
-                "sell": random.randint(0, 5),
-            },
-            "buy_point": round(price * random.uniform(0.88, 0.95), 2),
-            "sell_point": round(price * random.uniform(1.2, 1.5), 2),
+            "intrinsic_value": intrinsic,
+            "price_target": pt or round(price * 1.15, 2),
+            "stock_trend": bundle["trend"],
+            "earnings_date": earnings.get("date"),
+            "earnings_eps_estimate": earnings.get("eps_estimate"),
+            "revenue_billions": None,  # exact value needs reported financials call (left optional)
+            "net_cash_billions": None,
+            "net_profit_billions": None,
+            "debt_billions": None,
+            "pe_ratio": pe,
+            "eps_ttm": eps,
+            "roe": metrics.get("roe_ttm"),
+            "revenue_growth_pct": metrics.get("revenue_growth_ttm"),
+            "net_margin_pct": metrics.get("net_profit_margin"),
+            "beta": metrics.get("beta"),
+            "fifty_two_week_high": metrics.get("52w_high"),
+            "fifty_two_week_low": metrics.get("52w_low"),
+            "business_moat": "Wide" if (metrics.get("roe_ttm") or 0) > 20 else ("Narrow" if (metrics.get("roe_ttm") or 0) > 10 else "None"),
+            "competitors": bundle["peers"][:4],
+            "analyst_ratings": bundle["analyst_ratings"] or {"buy": 0, "hold": 0, "sell": 0},
+            "buy_point": round(price * 0.92, 2),
+            "sell_point": round((pt or price * 1.3), 2),
         }
         system = "You are a long-term value investor. Reply ONLY valid JSON."
         prompt = (
-            f"Give a long-term thesis for {tk} at ${price}. "
+            f"Give a long-term thesis for {tk}. Real-time data: price ${price}, P/E {pe}, EPS ${eps}, "
+            f"ROE {metrics.get('roe_ttm')}%, revenue growth {metrics.get('revenue_growth_ttm')}%, "
+            f"price target ${pt}, peers {bundle['peers'][:3]}, "
+            f"analyst ratings {bundle['analyst_ratings']}. "
             f'JSON: {{"summary":"...","verdict":"BUY|SELL|HOLD","confidence":"low|med|high","moat_note":"..."}}'
         )
 
@@ -544,7 +549,16 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
 
 @api_router.get("/screener/stocks")
 async def list_stocks():
-    return {"stocks": STOCKS}
+    return {"stocks": UNIVERSE}
+
+@api_router.get("/screener/quote/{ticker}")
+async def live_quote(ticker: str, authorization: Optional[str] = Header(default=None)):
+    await get_user_from_token(authorization)
+    async with httpx.AsyncClient() as client:
+        q = await get_quote(client, ticker.upper())
+    if not q:
+        raise HTTPException(status_code=404, detail=f"No quote for {ticker}")
+    return {"ticker": ticker.upper(), **q}
 
 
 # ========== PUSH NOTIFICATIONS ==========
@@ -579,20 +593,23 @@ async def push_test(req: PushTestReq, authorization: Optional[str] = Header(defa
 async def push_daily_pick(authorization: Optional[str] = Header(default=None)):
     """Simulate the daily top AI pick push for the current user."""
     user = await get_user_from_token(authorization)
-    pick = random.choice(STOCKS)
+    base = random.choice(UNIVERSE)
+    async with httpx.AsyncClient() as client:
+        q = await get_quote(client, base["ticker"])
+    price_str = f"${q['price']:.2f}" if q else "live price"
     try:
         await send_push(
             recipients=[user["user_id"]],
             data={
-                "title": f"Today's top pick: {pick['ticker']}",
-                "message": f"{pick['name']} shows strong setup at ${pick['price']}. Tap to analyze.",
-                "action_url": f"/ticker/{pick['ticker']}",
+                "title": f"Today's top pick: {base['ticker']}",
+                "message": f"{base['name']} shows strong setup at {price_str}. Tap to analyze.",
+                "action_url": f"/ticker/{base['ticker']}",
             },
         )
     except Exception as e:
         logger.warning(f"daily pick push failed: {e}")
-        return {"ok": False, "ticker": pick["ticker"], "error": str(e)}
-    return {"ok": True, "ticker": pick["ticker"]}
+        return {"ok": False, "ticker": base["ticker"], "error": str(e)}
+    return {"ok": True, "ticker": base["ticker"]}
 
 
 class EarningsReminderReq(BaseModel):

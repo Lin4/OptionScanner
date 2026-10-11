@@ -119,8 +119,8 @@ function ShortTermCard({ r, onTicker }: { r: any; onTicker: () => void }) {
         <KV label="SMA 20" value={`$${r.sma_20}`} />
         <KV label="SMA 50" value={`$${r.sma_50}`} />
         <KV label="RSI" value={`${r.rsi}`} />
-        <KV label="Short float" value={`${r.short_float_pct}%`} />
-        <KV label="Opt. vol" value={`${(r.option_volume / 1000).toFixed(0)}k`} />
+        <KV label="Short float" value={r.short_float_pct != null ? `${r.short_float_pct}%` : "N/A"} />
+        <KV label="Opt. vol" value={r.option_volume != null ? `${(r.option_volume / 1000).toFixed(0)}k` : "N/A"} />
         <KV label="Sentiment" value={r.market_sentiment} />
         <KV label="Intrinsic" value={`$${r.intrinsic_value}`} />
         <KV label="Profit prob." value={`${r.profit_probability}%`} color={colors.success} />
@@ -157,16 +157,24 @@ function LongTermCard({ r, onTicker }: { r: any; onTicker: () => void }) {
       <MetricRow label="Buy point" value={`$${r.buy_point}`} color={colors.success} />
       <MetricRow label="Sell point" value={`$${r.sell_point}`} color={colors.brandPrimary} />
       <MetricRow label="Trend" value={r.stock_trend} />
+      {r.pe_ratio != null ? <MetricRow label="P/E (TTM)" value={Number(r.pe_ratio).toFixed(2)} /> : null}
+      {r.eps_ttm != null ? <MetricRow label="EPS (TTM)" value={`$${Number(r.eps_ttm).toFixed(2)}`} /> : null}
+      {r.roe != null ? <MetricRow label="ROE" value={`${Number(r.roe).toFixed(1)}%`} /> : null}
+      {r.revenue_growth_pct != null ? <MetricRow label="Rev growth" value={`${Number(r.revenue_growth_pct).toFixed(1)}%`} color={r.revenue_growth_pct >= 0 ? colors.success : colors.error} /> : null}
+      {r.net_margin_pct != null ? <MetricRow label="Net margin" value={`${Number(r.net_margin_pct).toFixed(1)}%`} /> : null}
+      {r.beta != null ? <MetricRow label="Beta" value={Number(r.beta).toFixed(2)} /> : null}
+      {r.fifty_two_week_high != null ? <MetricRow label="52w high" value={`$${Number(r.fifty_two_week_high).toFixed(2)}`} /> : null}
+      {r.fifty_two_week_low != null ? <MetricRow label="52w low" value={`$${Number(r.fifty_two_week_low).toFixed(2)}`} /> : null}
 
       <Text style={styles.sectionLabel}>Earnings</Text>
-      <MetricRow label="Next date" value={r.earnings_date} />
-      <MetricRow label="EPS estimate" value={`$${r.earnings_eps_estimate}`} />
+      <MetricRow label="Next date" value={r.earnings_date || "TBA"} />
+      {r.earnings_eps_estimate != null ? <MetricRow label="EPS estimate" value={`$${Number(r.earnings_eps_estimate).toFixed(2)}`} /> : null}
 
       <Text style={styles.sectionLabel}>Financials ($B)</Text>
-      <MetricRow label="Revenue" value={`$${r.revenue_billions}`} />
-      <MetricRow label="Net profit" value={`$${r.net_profit_billions}`} color={r.net_profit_billions >= 0 ? colors.success : colors.error} />
-      <MetricRow label="Net cash" value={`$${r.net_cash_billions}`} />
-      <MetricRow label="Debt" value={`$${r.debt_billions}`} />
+      {r.revenue_billions != null ? <MetricRow label="Revenue" value={`$${r.revenue_billions}`} /> : <Text style={styles.hint}>Detailed financials require a premium data tier.</Text>}
+      {r.net_profit_billions != null ? <MetricRow label="Net profit" value={`$${r.net_profit_billions}`} color={r.net_profit_billions >= 0 ? colors.success : colors.error} /> : null}
+      {r.net_cash_billions != null ? <MetricRow label="Net cash" value={`$${r.net_cash_billions}`} /> : null}
+      {r.debt_billions != null ? <MetricRow label="Debt" value={`$${r.debt_billions}`} /> : null}
 
       <Text style={styles.sectionLabel}>Business</Text>
       <MetricRow label="Moat" value={r.business_moat} />
@@ -233,6 +241,7 @@ const styles = StyleSheet.create({
   aiRow: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-start", backgroundColor: colors.brandSecondary, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.md },
   aiText: { flex: 1, color: colors.onBrandSecondary, fontSize: 13, lineHeight: 18 },
   speakBtn: { width: 32, height: 32, borderRadius: radius.pill, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
+  hint: { color: colors.muted, fontSize: 11, fontStyle: "italic", marginVertical: 4 },
 
   metricsGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   metricBox: { flexGrow: 1, flexBasis: "30%", backgroundColor: colors.surfaceSecondary, padding: spacing.sm, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },

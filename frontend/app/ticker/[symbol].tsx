@@ -105,11 +105,13 @@ export default function TickerDetail() {
                 <MetricRow label="Intrinsic" value={`$${long.intrinsic_value}`} />
                 <MetricRow label="Price target" value={`$${long.price_target}`} color={colors.success} />
                 <MetricRow label="Trend" value={long.stock_trend} />
-                <MetricRow label="Earnings date" value={long.earnings_date} />
-                <MetricRow label="EPS est." value={`$${long.earnings_eps_estimate}`} />
-                <MetricRow label="Revenue (B)" value={`$${long.revenue_billions}`} />
-                <MetricRow label="Net profit (B)" value={`$${long.net_profit_billions}`} />
-                <MetricRow label="Debt (B)" value={`$${long.debt_billions}`} />
+                {long.pe_ratio != null ? <MetricRow label="P/E (TTM)" value={Number(long.pe_ratio).toFixed(2)} /> : null}
+                {long.eps_ttm != null ? <MetricRow label="EPS (TTM)" value={`$${Number(long.eps_ttm).toFixed(2)}`} /> : null}
+                {long.roe != null ? <MetricRow label="ROE" value={`${Number(long.roe).toFixed(1)}%`} /> : null}
+                {long.revenue_growth_pct != null ? <MetricRow label="Rev growth" value={`${Number(long.revenue_growth_pct).toFixed(1)}%`} /> : null}
+                {long.beta != null ? <MetricRow label="Beta" value={Number(long.beta).toFixed(2)} /> : null}
+                <MetricRow label="Earnings date" value={long.earnings_date || "TBA"} />
+                {long.earnings_eps_estimate != null ? <MetricRow label="EPS est." value={`$${Number(long.earnings_eps_estimate).toFixed(2)}`} /> : null}
                 <MetricRow label="Moat" value={long.business_moat} />
                 <View style={{ marginTop: spacing.sm, flexDirection: "row", gap: spacing.xs, flexWrap: "wrap" }}>
                   {(long.competitors || []).map((c: string) => <Badge key={c} text={c} kind="brand" />)}
