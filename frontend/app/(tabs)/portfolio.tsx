@@ -8,6 +8,8 @@ import { api } from "@/src/api";
 import { Input } from "@/src/Input";
 import { Button } from "@/src/Button";
 import { ToastHost, toast } from "@/src/Toast";
+import { Sparkline } from "@/src/parts";
+import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
 
 export default function Portfolio() {
@@ -86,18 +88,23 @@ export default function Portfolio() {
 
         <Text style={styles.sectionLabel}>{items.length} ticker{items.length === 1 ? "" : "s"}</Text>
 
-        {loading && !items.length && <ActivityIndicator color={colors.brandPrimary} />}
+        {loading && !items.length && <LoadingSkeleton lines={4} />}
 
         {items.map((it) => {
           const q = it.quote;
           const up = (q?.change_pct ?? 0) >= 0;
+          // Build a mini sparkline from open->price for visual (fake 10 points for now)
+          const sparkData = q ? Array.from({ length: 10 }).map((_, i) => q.prev_close + ((q.price - q.prev_close) * (i / 9))) : [];
           return (
             <Pressable key={it.ticker} testID={`wl-item-${it.ticker}`} onPress={() => router.push(`/ticker/${it.ticker}` as any)} style={styles.row}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTicker}>{it.ticker}</Text>
                 <Text style={styles.rowName} numberOfLines={1}>{it.name || it.ticker}</Text>
               </View>
-              <View style={{ alignItems: "flex-end", marginRight: spacing.md }}>
+              <View style={{ marginRight: spacing.md }}>
+                <Sparkline data={sparkData} up={up} width={56} height={22} />
+              </View>
+              <View style={{ alignItems: "flex-end", marginRight: spacing.md, minWidth: 72 }}>
                 <Text style={styles.rowPrice}>${q ? Number(q.price).toFixed(2) : "—"}</Text>
                 {q ? <Text style={[styles.rowChange, { color: up ? colors.success : colors.error }]}>{up ? "+" : ""}{Number(q.change_pct).toFixed(2)}%</Text> : null}
               </View>

@@ -7,6 +7,7 @@ import Icon from "@react-native-vector-icons/feather";
 import { api } from "@/src/api";
 import { ToastHost, toast } from "@/src/Toast";
 import { MetricRow, Badge } from "@/src/parts";
+import { FreshnessPill, LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
 
 export default function TickerDetail() {
@@ -49,16 +50,23 @@ export default function TickerDetail() {
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={styles.ticker}>{symbol}</Text>
-          <Text style={styles.price}>${Number(price).toFixed(2)}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 }}>
+            <Text style={styles.price}>${Number(price).toFixed(2)}</Text>
+            <FreshnessPill source="Finnhub" timestamp={new Date().toISOString()} />
+          </View>
         </View>
         {day?.verdict && <Badge text={day.verdict} kind={day.verdict === "BUY" ? "success" : day.verdict === "SELL" ? "error" : "warn"} />}
       </View>
 
       {loading ? (
-        <View style={{ padding: spacing.xl, alignItems: "center" }}><ActivityIndicator color={colors.brandPrimary} /></View>
+        <View style={{ padding: spacing.xl }}><LoadingSkeleton lines={6} /></View>
       ) : (
         <ScrollView contentContainerStyle={styles.scroll}>
           <View style={styles.chart}>
+            {/* Horizontal gridlines */}
+            {[0.25, 0.5, 0.75].map((p, i) => (
+              <View key={i} style={[styles.gridline, { top: p * 160 }]} />
+            ))}
             {candles.map((c: any, i: number) => {
               const bodyTop = ((max - Math.max(c.o, c.c)) / range) * 160;
               const bodyH = Math.max(((Math.abs(c.o - c.c)) / range) * 160, 1);
@@ -72,6 +80,8 @@ export default function TickerDetail() {
                 </View>
               );
             })}
+            <Text style={styles.axisHigh}>${max.toFixed(0)}</Text>
+            <Text style={styles.axisLow}>${min.toFixed(0)}</Text>
           </View>
 
           <View style={styles.tabs}>
@@ -148,7 +158,10 @@ const styles = StyleSheet.create({
   ticker: { fontSize: 20, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
   price: { fontSize: 14, color: colors.muted, fontVariant: ["tabular-nums"] },
   scroll: { padding: spacing.lg, paddingBottom: 60 },
-  chart: { height: 160, flexDirection: "row", alignItems: "flex-end", backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.sm, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
+  chart: { height: 160, flexDirection: "row", alignItems: "flex-end", backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.sm, borderWidth: 1, borderColor: colors.border, overflow: "hidden", position: "relative" },
+  gridline: { position: "absolute", left: 0, right: 0, height: 1, backgroundColor: colors.divider },
+  axisHigh: { position: "absolute", top: 4, left: 6, fontSize: 10, color: colors.muted, fontVariant: ["tabular-nums"], fontWeight: "600" },
+  axisLow: { position: "absolute", bottom: 4, left: 6, fontSize: 10, color: colors.muted, fontVariant: ["tabular-nums"], fontWeight: "600" },
   candleCol: { flex: 1, height: 160, position: "relative", marginHorizontal: 1 },
   wick: { position: "absolute", left: "48%", width: 1 },
   body: { position: "absolute", left: 0, right: 0, borderRadius: 1 },

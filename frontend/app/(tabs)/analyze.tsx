@@ -9,6 +9,7 @@ import { Button } from "@/src/Button";
 import { Input } from "@/src/Input";
 import { ToastHost, toast } from "@/src/Toast";
 import { MetricRow, Badge } from "@/src/parts";
+import { PayoffChart, FreshnessPill, LoadingSkeleton } from "@/src/charts";
 import { useTTS, useSTT } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
 
@@ -95,7 +96,7 @@ export default function Analyze() {
           <Button testID="analyze-run" label={loading ? "Analyzing…" : "Analyze"} onPress={run} loading={loading} />
         </View>
 
-        {loading && <View style={{ padding: spacing.xl, alignItems: "center" }}><ActivityIndicator color={colors.brandPrimary} /></View>}
+        {loading && <View style={{ padding: spacing.xl }}><LoadingSkeleton lines={5} /></View>}
 
         {data && (
           <View style={styles.card}>
@@ -124,11 +125,9 @@ export default function Analyze() {
 }
 
 function ProvenanceBar({ src }: { src: any }) {
-  const t = src.fetched_at ? new Date(src.fetched_at).toLocaleTimeString() : "live";
   return (
-    <View style={styles.provenance}>
-      <Icon name="clock" size={11} color={colors.muted} />
-      <Text style={styles.provText}>{src.quote || "Live quote"} • {t}</Text>
+    <View style={{ marginVertical: spacing.sm }}>
+      <FreshnessPill source={src.quote} timestamp={src.fetched_at} />
     </View>
   );
 }
@@ -163,12 +162,40 @@ function OptionsLab({ r }: { r: any }) {
         <Badge text={`exp ${r.expiration}`} kind="info" />
       </View>
 
-      <Text style={styles.sectionLabel}>Headline</Text>
-      <MetricRow label="Max profit" value={r.max_profit != null ? `$${r.max_profit}` : "—"} color={colors.success} />
-      <MetricRow label="Max loss" value={r.max_loss != null ? `$${r.max_loss}` : "undefined"} color={colors.error} />
+      {/* Hero numbers */}
+      <View style={styles.heroRow}>
+        <View style={styles.heroBox}>
+          <Text style={styles.heroLabel}>Max profit</Text>
+          <Text style={[styles.heroVal, { color: colors.success }]}>
+            {r.max_profit != null ? `$${r.max_profit}` : "—"}
+          </Text>
+        </View>
+        <View style={styles.heroBox}>
+          <Text style={styles.heroLabel}>Max loss</Text>
+          <Text style={[styles.heroVal, { color: colors.error }]}>
+            {r.max_loss != null ? `$${r.max_loss}` : "undefined"}
+          </Text>
+        </View>
+        <View style={styles.heroBox}>
+          <Text style={styles.heroLabel}>POP</Text>
+          <Text style={styles.heroVal}>{r.pop}%</Text>
+        </View>
+      </View>
+
+      {/* Payoff chart */}
+      <Text style={styles.sectionLabel}>Payoff at expiration</Text>
+      <PayoffChart
+        legs={r.legs || []}
+        premiumNet={r.premium_net || 0}
+        currentPrice={r.price}
+        breakevens={r.breakevens || []}
+        maxProfit={r.max_profit}
+        maxLoss={r.max_loss}
+      />
+
+      <Text style={styles.sectionLabel}>Metrics</Text>
       <MetricRow label="Breakevens" value={(r.breakevens || []).map((b: number) => `$${b}`).join(" / ") || "—"} />
-      <MetricRow label="Probability of profit" value={`${r.pop}%`} color={colors.success} />
-      <MetricRow label="Premium (net)" value={`${r.premium_net > 0 ? "+" : ""}$${r.premium_net}`} />
+      <MetricRow label="Premium (net)" value={`${r.premium_net > 0 ? "+" : ""}$${r.premium_net}`} color={r.premium_net > 0 ? colors.success : colors.error} />
       <MetricRow label="Collateral" value={`$${r.collateral}`} />
       <MetricRow label="APR" value={`${r.annual_pct_no_margin}%`} color={colors.success} />
 
@@ -198,10 +225,12 @@ function OptionsLab({ r }: { r: any }) {
 
       {expanded === "greeks" && (
         <View>
-          <MetricRow label="Delta" value={String(r.greeks?.delta ?? "—")} />
-          <MetricRow label="Gamma" value={String(r.greeks?.gamma ?? "—")} />
-          <MetricRow label="Theta (per day)" value={String(r.greeks?.theta ?? "—")} />
-          <MetricRow label="Vega" value={String(r.greeks?.vega ?? "—")} />
+          <View style={styles.greekGrid}>
+            <GreekBox label="Delta" value={String(r.greeks?.delta ?? "—")} />
+            <GreekBox label="Gamma" value={String(r.greeks?.gamma ?? "—")} />
+            <GreekBox label="Theta/day" value={String(r.greeks?.theta ?? "—")} />
+            <GreekBox label="Vega" value={String(r.greeks?.vega ?? "—")} />
+          </View>
           <MetricRow label="IV assumed" value={`${((r.iv_assumed ?? 0) * 100).toFixed(0)}%`} />
           <Text style={styles.disclaimer}>Theoretical values from Black-Scholes with the IV assumption above. Real quotes may differ.</Text>
         </View>
@@ -215,7 +244,7 @@ function OptionsLab({ r }: { r: any }) {
               <Text style={styles.scenarioLabel}>Day {row.days_elapsed}</Text>
               <View style={styles.scenarioCells}>
                 {Object.entries(row.pnl).map(([mv, p]: any) => (
-                  <View key={mv} style={styles.scenarioCell}>
+                  <View key={mv} style={[styles.scenarioCell, { backgroundColor: p >= 0 ? "#ECFDF5" : "#FEF2F2" }]}>
                     <Text style={styles.scenarioMv}>{mv}</Text>
                     <Text style={[styles.scenarioPnl, { color: p >= 0 ? colors.success : colors.error }]}>${p}</Text>
                   </View>
@@ -231,6 +260,15 @@ function OptionsLab({ r }: { r: any }) {
       {r.assumptions ? (
         <Text style={styles.disclaimer}>Assumptions: {r.assumptions.model} • IV {r.assumptions.iv_assumed_pct}% • risk-free {r.assumptions.risk_free_rate_pct}%.</Text>
       ) : null}
+    </View>
+  );
+}
+
+function GreekBox({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.greekBox}>
+      <Text style={styles.greekLabel}>{label}</Text>
+      <Text style={styles.greekVal}>{value}</Text>
     </View>
   );
 }
@@ -327,6 +365,16 @@ const styles = StyleSheet.create({
 
   provenance: { flexDirection: "row", alignItems: "center", gap: 6, marginVertical: spacing.sm },
   provText: { fontSize: 11, color: colors.muted },
+
+  heroRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
+  heroBox: { flex: 1, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, alignItems: "center" },
+  heroLabel: { fontSize: 10, color: colors.muted, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },
+  heroVal: { fontSize: 20, fontWeight: "800", marginTop: 4, fontVariant: ["tabular-nums"], letterSpacing: -0.5 },
+
+  greekGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginVertical: spacing.sm },
+  greekBox: { flexGrow: 1, flexBasis: "22%", backgroundColor: colors.surfaceSecondary, padding: spacing.sm, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, alignItems: "center" },
+  greekLabel: { fontSize: 10, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: "700" },
+  greekVal: { fontSize: 15, fontWeight: "700", color: colors.onSurface, marginTop: 4, fontVariant: ["tabular-nums"] },
 
   aiRow: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-start", backgroundColor: colors.brandSecondary, padding: spacing.sm, borderRadius: radius.md, marginVertical: spacing.sm },
   aiText: { flex: 1, color: colors.onBrandSecondary, fontSize: 13, lineHeight: 18 },

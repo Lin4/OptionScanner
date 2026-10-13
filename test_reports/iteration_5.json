@@ -1,0 +1,39 @@
+{
+  "summary": "Auth regression + core-flow smoke after iteration 5 (frontend-polish-only). 12/12 pytest cases pass on the public preview URL. Reproduced the user bug 'Sign in not working' and could NOT reproduce it against the OptiScreen backend: POST /api/auth/login with seeded credentials (trader@optiscreen.app / TestPass123!) returns 200 with a valid session_token and a user object showing plan='advance', questionnaire_complete=true, consent_signed=true, no _id or password leak. Wrong password and unknown email both correctly return 401 {detail:'Invalid credentials'}. GET /api/auth/me with the Bearer session_token returns the same user (user_id matches); 401 without the header and 401 with a bad token. POST /api/auth/register with the existing seed email returns 400 ('Email already registered'). Regression on core flows (no backend changes expected): POST /api/screener/ticker-options {AAPL, month} returns {result:{strategy, legs (each with theo_price + delta/gamma/theta/vega), premium_net, breakevens (list), max_profit, max_loss (nullable), greeks aggregate, scenario_matrix (list of {days_elapsed, pnl})}}; watchlist add+list+delete works and items are free of _id/user_id; alerts add+list+delete works and the returned object has NO _id and NO user_id (only alert_id); /api/learn/cards is public and returns 8 cards (>=6) each with id/category/title/summary. User-reported bug is confirmed NOT a backend bug — most likely Expo Go's own sign-in screen as noted by main agent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_regression.py",
+    "/app/test_reports/pytest/auth_regression_results.xml"
+  ],
+  "action_items": [
+    "Mark the user-reported 'Sign in not working' bug as 'not a backend bug' — the OptiScreen /api/auth/login endpoint accepts the seeded credentials end-to-end (verified via public preview URL). Most likely the user was on Expo Go's own login screen as suspected.",
+    "(Optional, pre-existing) server.py:94-100 AlertAddReq still does not validate that price_above/price_below alerts carry a numeric threshold. Low priority; carried over from iteration 4."
+  ],
+  "critical_code_review_comments": [
+    "server.py:299-307 /auth/login — correctly uses verify_pw against stored hash, lowercases email, pops password before returning; returns 401 on both unknown email and bad password (uniform error, no user enumeration). Good.",
+    "server.py:277-297 /auth/register — checks for duplicate email with 400, stores lowercased email, hashes password, creates session on success. Clean.",
+    "server.py:356-359 /auth/me — relies on get_user_from_token which raises 401 for both missing and invalid Bearer tokens; the user object returned excludes password and _id via projection. Good.",
+    "server.py:452-477 /screener/ticker-options — wraps enriched payload in {result: opt}; AI calls (claude) are tolerated with safe defaults if LLM fails (ai.get(...) with fallback strings)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_regression.py (new, 12 tests focused on this iteration's review request)"
+  ],
+  "success_rate": {
+    "backend": "100% (12/12 auth + core-flow regression tests pass on public preview URL)",
+    "frontend": "not tested (backend only per review_request.testing_type)"
+  },
+  "seed_data_creation": "Reused existing trader@optiscreen.app seed account. Tests create/delete transient watchlist entry (NVDA) and alert (TSLA price_above 500) that are cleaned up within the test. No new user accounts persisted.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auth regression suite lives at /app/backend/tests/test_auth_regression.py (12 tests). Use EXPO_PUBLIC_BACKEND_URL for BASE_URL. Seeded trader credentials are in /app/memory/test_credentials.md. Notable response conventions already verified: /auth/login + /auth/me return the user object WITH user_id (it's the identity, not a leak) but WITHOUT _id or password; /watchlist and /alerts items strip both _id AND user_id via projection; /screener/ticker-options wraps enriched strategy under 'result' key. max_loss can legitimately be null for undefined-risk strategies.",
+  "rca_of_issue": "User reported 'Sign in not working with the given email and password'. Reproduction attempt against POST /api/auth/login with the seeded credentials returned 200 OK with a valid session_token and the fully-onboarded user object. Wrong password and unknown email both return the correct 401. No backend bug exists. Root cause of the user-facing confusion was most likely the Expo Go/Expo.dev own account sign-in screen that appears before the preview loads, not the OptiScreen app's own login screen — consistent with main agent's investigation note. Mitigation: no code change required for backend; frontend-side guidance (e.g. clearer onboarding to the OptiScreen login screen within Expo Go) is a UX improvement for a future iteration."
+}

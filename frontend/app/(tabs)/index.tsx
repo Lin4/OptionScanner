@@ -10,6 +10,7 @@ import { Button } from "@/src/Button";
 import { Input } from "@/src/Input";
 import { ToastHost, toast } from "@/src/Toast";
 import { Sparkline, Badge } from "@/src/parts";
+import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
 
 type Mode = "find" | "best";
@@ -120,30 +121,31 @@ export default function Discover() {
           </View>
         ) : null}
 
-        {loading && !results.length && <View style={{ padding: spacing.xl, alignItems: "center" }}><ActivityIndicator color={colors.brandPrimary} /></View>}
+        {loading && !results.length && <LoadingSkeleton lines={6} />}
 
         {results.map((r, i) => (
           <Pressable key={i} testID={`disc-result-${r.ticker}`} onPress={() => router.push(`/ticker/${r.ticker}` as any)} style={styles.resultCard}>
+            <View style={styles.strategyStripe} />
             <View style={styles.resultTop}>
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Text style={styles.ticker}>{r.ticker}</Text>
+                <Text style={styles.ticker}>{r.ticker}</Text>
+                <Text style={styles.company} numberOfLines={1}>{r.name}</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
                   <Badge text={r.strategy} kind="brand" />
                   {r.bias ? <Badge text={r.bias} kind={r.bias === "bullish" ? "success" : r.bias === "bearish" ? "error" : "info"} /> : null}
                 </View>
-                <Text style={styles.company} numberOfLines={1}>{r.name}</Text>
               </View>
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={styles.price}>${Number(r.price).toFixed(2)}</Text>
                 <Sparkline data={r.sparkline || []} up={(r.annual_pct_no_margin || 0) >= 0} />
+                <Text style={styles.aprMini}>APR {r.annual_pct_no_margin}%</Text>
               </View>
             </View>
             <View style={styles.metricsRow}>
               <Mini label="POP" value={`${r.pop}%`} />
               <Mini label="Premium" value={`$${r.premium}`} />
-              <Mini label="Max profit" value={r.max_profit != null ? `$${r.max_profit}` : "—"} />
-              <Mini label="Max loss" value={r.max_loss != null ? `$${r.max_loss}` : "—"} tone="error" />
-              <Mini label="APR" value={`${r.annual_pct_no_margin}%`} tone="success" />
+              <Mini label="Max profit" value={r.max_profit != null ? `$${r.max_profit}` : "—"} tone="success" />
+              <Mini label="Max loss" value={r.max_loss != null ? `$${r.max_loss}` : "undef"} tone="error" />
             </View>
             {r.rationale ? <Text style={styles.rationale}>{r.rationale}</Text> : null}
           </Pressable>
@@ -208,11 +210,13 @@ const styles = StyleSheet.create({
   ai: { flexDirection: "row", gap: spacing.sm, backgroundColor: colors.brandSecondary, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.md, alignItems: "flex-start" },
   aiText: { flex: 1, color: colors.onBrandSecondary, fontSize: 13, lineHeight: 18, fontWeight: "500" },
 
-  resultCard: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.lg, marginBottom: spacing.md },
+  resultCard: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.lg, marginBottom: spacing.md, overflow: "hidden" },
+  strategyStripe: { position: "absolute", left: 0, top: 0, bottom: 0, width: 4, backgroundColor: colors.brandPrimary },
   resultTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
-  ticker: { fontSize: 20, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
+  ticker: { fontSize: 22, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
   company: { fontSize: 12, color: colors.muted, marginTop: 2 },
-  price: { fontSize: 15, fontWeight: "700", color: colors.onSurface, fontVariant: ["tabular-nums"], marginBottom: 4 },
+  price: { fontSize: 16, fontWeight: "800", color: colors.onSurface, fontVariant: ["tabular-nums"], marginBottom: 4 },
+  aprMini: { fontSize: 10, fontWeight: "700", color: colors.success, marginTop: 4, fontVariant: ["tabular-nums"] },
 
   metricsRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginTop: spacing.md },
   mini: { flexGrow: 1, flexBasis: "18%", backgroundColor: colors.surfaceSecondary, padding: spacing.sm, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
