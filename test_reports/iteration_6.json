@@ -1,0 +1,41 @@
+{
+  "summary": "Phase A full-stack regression (OptiScreen). Backend: 21/21 pytest cases pass against the public preview URL (/app/backend/tests/test_phase_a.py). All Phase A APIs verified: /screener/profiles returns 3 numeric profiles + 13 strategies + 4 account types + defaults; /screener/best-options honors profile+period(day/week/month/custom)+sliders+account_size and returns filters/stats.rejected_by/results-with-liquidity-grade+collateral_by_account+expiration_days; warm-cache scan returns in <5s on repeat; /screener/find-stocks respects sector filter and maps legacy risk/reward -> profile high_high; /screener/ticker-options prices all 13 strategies on SPY, Short Strangle correctly disallowed in cash/ira (allowed=false), unknown strategy -> 400, auto returns legs/pricing(net_mid,net_fill,slippage_cost,fees)/volatility(iv,hv20,iv_rank)/liquidity.estimated=true/events/why/risks/alternatives/breakevens with max_loss<=0 or None; /screener/stock-analysis day+swing return trade_plan(direction,entry,stop,target,atr,shares,logic) + scenarios Bull/Base/Bear, long returns valuation+valuation_inputs; /screener/valuation recalculates (or 400 w/o EPS); /screener/explain returns summary+picks; alert validation: price_above w/o threshold -> 400, negative threshold -> 422, earnings w/o threshold -> 200. Frontend (mobile 390x844): login (trader@optiscreen.app) works and lands on Discover; profile-low_low|low_high|high_high cards + toggle-finetune (reveals sl-max-loss/sl-min-pop/sl-min-roc/sl-min-iv/sw-earnings) + disc-run + scan-stats + disc-result-{TICKER} all present and interactive. Tapping a result navigates to Analyze with Options Lab prefilled and auto-run. Options Lab shows all expected sections (Why this fits, What could go wrong, Realistic pricing, Collateral by account table with coll-cash/ira/reg_t/portfolio_margin rows, Volatility, Liquidity MODEL ESTIMATE badge, Events) and strategy chips (strat-Iron Condor etc.) + account chips (an-acct-cash etc.) work. Swing lab renders scen-Bull/Base/Bear + trade plan (entry/stop/target/ATR/shares/logic). Long-term lab exposes dcf-bull/base/bear/disc/tpe + dcf-recalc + weighted value + buy/sell zones. One unverified-via-screenshot item: PayoffChart renders on Covered Call result — the component is wired in analyze.tsx (line 259) via @/src/charts, but inner-ScrollView wouldn't scroll in headless Playwright so SVG count read 0 at viewport top; not reproducible as a bug, flagging as a self-check for main agent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_a.py",
+    "/app/test_reports/pytest/phase_a_results.xml"
+  ],
+  "action_items": [
+    "Optional self-check: verify PayoffChart (SVG) visually renders in the Options Lab result for Covered Call — code is wired (analyze.tsx:259) but Playwright inner-scroll could not expose it in automated viewport; manual check in Expo preview is enough.",
+    "Old /app/backend/tests/test_optiscreen_api.py expects legacy fields (premium, collateral, annual_pct_no_margin, ai_summary) that the new engine no longer returns on best-options/ticker-options. New Phase A suite (test_phase_a.py) supersedes it — recommend removing or rewriting the old file so CI doesn't trip on it."
+  ],
+  "critical_code_review_comments": [
+    "engine.py:474-497 passes() enforces account_type.allowed, undefined-risk (gated by profile.allow_undefined), max_loss_pct, min_pop, min_roc, liquidity (min_oi/spread_pct_of_premium), min_iv_rank, exclude_earnings — all slider knobs honored.",
+    "engine.py:313-358 collateral_by_account correctly returns {allowed:false, reason:'Naked short options are not permitted...'} for Short Strangle in cash/ira and allowed=true for reg_t/portfolio_margin.",
+    "server.py:762-783 /alerts/add validates kind + threshold (400 when price alert lacks threshold); Pydantic Field(gt=0) catches negatives as 422. Earnings alerts correctly allow null threshold.",
+    "server.py:271-284 warm_universe_loop prefetches candles+quotes+earnings+metrics for the full UNIVERSE, respecting Polygon free-tier limits — explains the <2s warm scan latency measured in tests.",
+    "analyze.tsx:258-259 PayoffChart imported and rendered unconditionally for Options Lab results — correct for any strategy including Covered Call (has Stock leg).",
+    "screen.tsx:78 profile cards expose testID=`profile-${id}` for all three numeric profiles; screen.tsx:196 collateral table rows expose testID=`coll-${account_type}`."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_a.py (new, 21 Phase A tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (21/21)",
+    "frontend": "100% of in-scope flows verified via Playwright (login, Discover filters+scan+navigate, Options Lab all strategies+accounts+sections, Swing lab, Long-term lab + DCF edit/recalc)"
+  },
+  "seed_data_creation": "Reused seeded trader@optiscreen.app/TestPass123! account (plan=advance, onboarding complete). Transient earnings alert for AAPL created & deleted inside a single test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase A regression suite lives at /app/backend/tests/test_phase_a.py (21 tests, shared conftest). Use EXPO_PUBLIC_BACKEND_URL for BASE_URL. New response conventions verified: best-options returns {results, profile, profile_label, filters, account_type, account_size, bias, stats:{tickers_scanned,ideas_evaluated,passed,rejected_by:{...}}, top_pick}; ticker-options wraps enriched idea under 'result' and includes passes_filters/failed_filters/alternatives; stock-analysis(day|swing) returns trade_plan + scenarios[Bull/Base/Bear] + candles; stock-analysis(long) returns valuation (DCF scenarios + weighted_value + buy_zone_below/sell_zone_above) + valuation_inputs. Short Strangle cash/ira collateral entry has allowed=false. Liquidity.estimated=true on every leg. Note that the old /app/backend/tests/test_optiscreen_api.py still exists but references legacy fields (premium/collateral/annual_pct_no_margin/ai_summary) — do NOT run it.",
+  "rca_of_issue": "N/A — no bugs reproduced in this iteration; all review-request items pass."
+}

@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView, ActivityIndicator } from "react-native";
+import React, { useEffect, useState } from "react";
+import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import Icon from "@react-native-vector-icons/feather";
@@ -12,50 +12,66 @@ import { ToastHost, toast } from "@/src/Toast";
 import { Sparkline, Badge } from "@/src/parts";
 import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
+import { Filters, ProfileId, PROFILE_INFO, defaultFilters, filtersPayload, FilterPanel, ProfilePicker, Label, accountLabel } from "@/src/screen";
 
 type Mode = "find" | "best";
-const RISK = ["low", "high"];
-const REWARD = ["low", "high"];
-const EXPIRATION = ["daily", "week", "month"];
+const EXPIRATION = ["daily", "week", "month", "3months"];
 const SECTORS = ["Tech", "Consumer Discretionary", "Financials", "Energy", "Healthcare", "Consumer Staples", "Industrials", "Index"];
 const PERIODS = ["day", "week", "month", "custom"];
+const REJECT_LABEL: Record<string, string> = { max_loss: "max loss", pop: "probability", roc: "return", liquidity: "liquidity", iv_rank: "IV rank", earnings: "earnings", undefined_risk: "undefined risk", account_type: "account type" };
 
 export default function Discover() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
   const [mode, setMode] = useState<Mode>("best");
-  // Find
-  const [risk, setRisk] = useState("high");
-  const [reward, setReward] = useState("high");
+  const [f, setF] = useState<Filters>(defaultFilters("low_low"));
+  const set = (p: Partial<Filters>) => setF((c) => ({ ...c, ...p }));
   const [exp, setExp] = useState("week");
   const [sectors, setSectors] = useState<string[]>([]);
-  // Best
   const [period, setPeriod] = useState("week");
   const [customDays, setCustomDays] = useState("14");
   const [limit, setLimit] = useState("5");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
   const [summary, setSummary] = useState("");
+  const [aiMap, setAiMap] = useState<Record<string, any>>({});
+  const [aiLoading, setAiLoading] = useState(false);
+
+  useEffect(() => {
+    api("/api/screener/profiles").then((r) => {
+      if (r?.defaults) set({ account_type: r.defaults.account_type, account_size: String(r.defaults.account_size) });
+    }).catch(() => {});
+  }, []);
 
   const toggleSector = (s: string) => setSectors((c) => c.includes(s) ? c.filter((x) => x !== s) : [...c, s]);
+  const pickProfile = (p: ProfileId) => set({ profile: p, ...PROFILE_INFO[p].defaults });
+
+  const explain = async (rows: any[], context: string) => {
+    if (!rows.length) return;
+    setAiLoading(true);
+    try {
+      const ideas = rows.map((r) => ({ ticker: r.ticker, strategy: r.strategy, price: r.price, pop: r.pop, roc_pct: r.roc_pct,
+        max_profit: r.max_profit, max_loss: r.max_loss, iv_rank: r.volatility?.iv_rank, liquidity: r.liquidity?.grade,
+        earnings_in_window: r.events?.earnings_in_window, dte: r.expiration_days }));
+      const a = await api("/api/screener/explain", { method: "POST", body: JSON.stringify({ ideas, context }) });
+      setSummary(a.summary || "");
+      const m: Record<string, any> = {};
+      (a.picks || []).forEach((p: any) => { m[p.ticker] = p; });
+      setAiMap(m);
+    } catch {} finally { setAiLoading(false); }
+  };
 
   const run = async () => {
-    setLoading(true); setResults([]); setSummary("");
+    setLoading(true); setResults([]); setSummary(""); setAiMap({}); setStats(null);
     try {
-      if (mode === "find") {
-        const r = await api("/api/screener/find-stocks", {
-          method: "POST",
-          body: JSON.stringify({ risk, reward, expiration: exp, sectors, limit: parseInt(limit) || 5 }),
-        });
-        setResults(r.results || []);
-      } else {
-        const r = await api("/api/screener/best-options", {
-          method: "POST",
-          body: JSON.stringify({ period, custom_days: period === "custom" ? parseInt(customDays) : null, limit: parseInt(limit) || 5 }),
-        });
-        setResults(r.results || []); setSummary(r.ai_summary || "");
-      }
+      const base = { ...filtersPayload(f), limit: parseInt(limit) || 5 };
+      const r = mode === "find"
+        ? await api("/api/screener/find-stocks", { method: "POST", body: JSON.stringify({ ...base, expiration: exp, sectors }) })
+        : await api("/api/screener/best-options", { method: "POST", body: JSON.stringify({ ...base, period, custom_days: period === "custom" ? parseInt(customDays) : null }) });
+      setResults(r.results || []); setStats(r.stats);
+      explain(r.results || [], `${PROFILE_INFO[f.profile].title}, ${mode === "find" ? exp : period} horizon, ${accountLabel(f.account_type)} account`);
     } catch (e: any) { toast(e.message || "Failed", "error"); }
     finally { setLoading(false); }
   };
@@ -76,7 +92,7 @@ export default function Discover() {
           {[{ id: "best", label: "Best opportunities" }, { id: "find", label: "Find stocks" }].map((m) => {
             const active = mode === m.id;
             return (
-              <Pressable key={m.id} testID={`disc-mode-${m.id}`} onPress={() => { setMode(m.id as Mode); setResults([]); setSummary(""); }} style={[styles.modeChip, active && styles.modeChipActive]}>
+              <Pressable key={m.id} testID={`disc-mode-${m.id}`} onPress={() => { setMode(m.id as Mode); setResults([]); setSummary(""); setStats(null); }} style={[styles.modeChip, active && styles.modeChipActive]}>
                 <Text style={[styles.modeChipText, active && styles.modeChipTextActive]}>{m.label}</Text>
               </Pressable>
             );
@@ -86,10 +102,10 @@ export default function Discover() {
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.filterCard}>
+          <Label>Risk profile</Label>
+          <ProfilePicker value={f.profile} onChange={pickProfile} />
           {mode === "find" ? (
             <>
-              <ChipRow label="Risk tolerance" value={risk} onChange={setRisk} options={RISK} testKey="risk" />
-              <ChipRow label="Reward target" value={reward} onChange={setReward} options={REWARD} testKey="reward" />
               <ChipRow label="Expiration" value={exp} onChange={setExp} options={EXPIRATION} testKey="exp" />
               <Text style={styles.chipLabel}>Sectors</Text>
               <View style={styles.chipsWrap}>
@@ -109,11 +125,25 @@ export default function Discover() {
               {period === "custom" ? <Input testID="custom-days" label="Custom days" value={customDays} onChangeText={setCustomDays} keyboardType="numeric" /> : null}
             </>
           )}
+          <FilterPanel f={f} set={set} />
           <Input testID="limit-input" label="Number of ideas" value={limit} onChangeText={setLimit} keyboardType="numeric" />
           <Button testID="disc-run" label={loading ? "Scanning…" : "Scan markets"} onPress={run} loading={loading} />
-          <Text style={styles.disclaimer}>Hard filters (liquidity, data freshness) are applied before ranking. Research only — not investment advice.</Text>
+          <Text style={styles.disclaimer}>The math engine prices every idea and applies your filters (risk, probability, liquidity, IV) before ranking. AI only explains. Research only — not investment advice.</Text>
         </View>
 
+        {stats ? (
+          <Text testID="scan-stats" style={styles.stats}>
+            {stats.tickers_scanned} stocks · {stats.ideas_evaluated} setups priced · {stats.passed} passed
+            {Object.keys(stats.rejected_by || {}).length ? ` · filtered by ${Object.entries(stats.rejected_by).sort((a: any, b: any) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${REJECT_LABEL[k] || k} (${v})`).join(", ")}` : ""}
+          </Text>
+        ) : null}
+        {stats && !results.length && !loading ? (
+          <View style={styles.empty}>
+            <Icon name="filter" size={20} color={colors.muted} />
+            <Text style={styles.emptyText}>No setups passed your filters. Loosen max loss, probability or liquidity under &quot;Fine-tune risk numbers&quot;.</Text>
+          </View>
+        ) : null}
+        {aiLoading && !summary ? <Text style={styles.stats}>AI is writing explanations…</Text> : null}
         {summary ? (
           <View style={styles.ai}>
             <Icon name="zap" size={16} color={colors.brandPrimary} />
@@ -124,7 +154,7 @@ export default function Discover() {
         {loading && !results.length && <LoadingSkeleton lines={6} />}
 
         {results.map((r, i) => (
-          <Pressable key={i} testID={`disc-result-${r.ticker}`} onPress={() => router.push(`/ticker/${r.ticker}` as any)} style={styles.resultCard}>
+          <Pressable key={i} testID={`disc-result-${r.ticker}`} onPress={() => router.push({ pathname: "/(tabs)/analyze", params: { ticker: r.ticker, strategy: r.strategy, range: r.expiration_days > 45 ? "3months" : r.expiration_days > 10 ? "month" : "week" } } as any)} style={styles.resultCard}>
             <View style={styles.strategyStripe} />
             <View style={styles.resultTop}>
               <View style={{ flex: 1 }}>
@@ -138,16 +168,23 @@ export default function Discover() {
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={styles.price}>${Number(r.price).toFixed(2)}</Text>
                 <Sparkline data={r.sparkline || []} up={(r.annual_pct_no_margin || 0) >= 0} />
-                <Text style={styles.aprMini}>APR {r.annual_pct_no_margin}%</Text>
+                <Text style={styles.aprMini}>ROC {r.roc_pct != null ? `${r.roc_pct}%` : "∞"}</Text>
               </View>
             </View>
             <View style={styles.metricsRow}>
               <Mini label="POP" value={`${r.pop}%`} />
-              <Mini label="Premium" value={`$${r.premium}`} />
-              <Mini label="Max profit" value={r.max_profit != null ? `$${r.max_profit}` : "—"} tone="success" />
+              <Mini label={r.premium_type === "debit" ? "Debit" : "Credit"} value={`$${r.premium}`} />
+              <Mini label="Max profit" value={r.max_profit != null ? `$${r.max_profit}` : "∞"} tone="success" />
               <Mini label="Max loss" value={r.max_loss != null ? `$${r.max_loss}` : "undef"} tone="error" />
             </View>
-            {r.rationale ? <Text style={styles.rationale}>{r.rationale}</Text> : null}
+            <View style={styles.tagRow}>
+              <Badge text={`Liquidity ${r.liquidity?.grade || "—"} (est.)`} kind={r.liquidity?.grade === "High" ? "success" : r.liquidity?.grade === "Low" ? "error" : "info"} />
+              <Badge text={`IV rank ${Math.round(r.volatility?.iv_rank ?? 0)}`} kind="info" />
+              <Badge text={`${r.expiration_days}d`} kind="info" />
+              {r.events?.earnings_in_window ? <Badge text="Earnings in window" kind="warn" /> : null}
+            </View>
+            {aiMap[r.ticker]?.why ? <Text style={styles.rationale}>{aiMap[r.ticker].why}</Text> : <Text style={styles.rationale}>{r.why?.[0]}</Text>}
+            {aiMap[r.ticker]?.risk ? <Text style={[styles.rationale, { color: colors.error }]}>Risk: {aiMap[r.ticker].risk}</Text> : null}
           </Pressable>
         ))}
       </ScrollView>
@@ -223,5 +260,9 @@ const styles = StyleSheet.create({
   miniLabel: { fontSize: 9, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5 },
   miniVal: { fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"], marginTop: 2 },
 
+  stats: { fontSize: 11, color: colors.muted, marginBottom: spacing.sm, lineHeight: 16 },
+  empty: { alignItems: "center", gap: spacing.sm, padding: spacing.xl, backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md },
+  emptyText: { color: colors.onSurfaceSecondary, fontSize: 13, textAlign: "center", lineHeight: 18 },
+  tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: spacing.sm },
   rationale: { fontSize: 12, color: colors.onSurfaceSecondary, marginTop: spacing.sm, fontStyle: "italic", lineHeight: 17 },
 });

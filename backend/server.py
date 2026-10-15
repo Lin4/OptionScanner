@@ -11,6 +11,7 @@ import random
 import json
 import re
 import asyncio
+import time
 import bcrypt
 import jwt as pyjwt
 import httpx
@@ -31,7 +32,12 @@ from market import (
     UNIVERSE, UNIVERSE_INDEX, fetch_stock_bundle, get_quote, get_candles,
     sma as calc_sma, rsi as calc_rsi, support_resistance, detect_candle_patterns, detect_chart_patterns,
 )
-from options_math import enrich_legs_with_greeks, analyze_strategy_payoff, scenario_matrix
+from market import get_earnings, get_metrics, _cache_get as market_cache_get
+from engine import (
+    STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS,
+    volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
+    trade_plan, price_scenarios, dcf_valuation, default_dcf_inputs,
+)
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -70,33 +76,68 @@ class ConsentReq(BaseModel):
     agreed: bool
     signature: str  # typed signature
 
-class FindStockReq(BaseModel):
-    risk: str  # high | low
-    reward: str  # high | low
-    expiration: str  # daily | week | month
+class ScreenFilters(BaseModel):
+    """Numeric risk profile + sliders. None = use profile default."""
+    profile: Optional[str] = None  # low_low | low_high | high_high
+    bias: Optional[str] = None  # bullish | bearish | neutral | any
+    account_type: Optional[str] = None  # cash | ira | reg_t | portfolio_margin
+    account_size: Optional[float] = Field(default=None, gt=0, le=1e9)
+    max_loss_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    min_pop: Optional[float] = Field(default=None, ge=0, le=100)
+    min_roc: Optional[float] = Field(default=None, ge=0, le=10000)
+    min_oi: Optional[int] = Field(default=None, ge=0)
+    max_spread_pct: Optional[float] = Field(default=None, gt=0, le=100)
+    min_iv_rank: Optional[float] = Field(default=None, ge=0, le=100)
+    exclude_earnings: Optional[bool] = None
+
+class FindStockReq(ScreenFilters):
+    risk: Optional[str] = None  # legacy: high | low
+    reward: Optional[str] = None  # legacy: high | low
+    expiration: str = "week"  # daily | week | month | 3months
     sectors: List[str] = []
-    limit: int = 5
+    limit: int = Field(default=5, ge=1, le=20)
 
-class BestOptionsReq(BaseModel):
-    period: str  # day | week | month | custom
+class BestOptionsReq(ScreenFilters):
+    risk: Optional[str] = None
+    reward: Optional[str] = None
+    period: str = "week"  # day | week | month | custom
     custom_days: Optional[int] = None
-    limit: int = 5
+    limit: int = Field(default=5, ge=1, le=20)
 
-class TickerOptionsReq(BaseModel):
+class TickerOptionsReq(ScreenFilters):
     ticker: str
-    expiration_range: str  # week | month | 3months
+    expiration_range: str = "month"  # week | month | 3months
+    strategy: Optional[str] = None  # auto | strategy name
 
 class StockAnalysisReq(BaseModel):
     ticker: str
     purpose: str  # day | swing | long
+    account_size: Optional[float] = Field(default=None, gt=0, le=1e9)
+    risk_pct: float = Field(default=1.0, gt=0, le=10)
+    min_rr: float = Field(default=2.0, ge=0.5, le=10)
+
+class ExplainReq(BaseModel):
+    ideas: List[Dict[str, Any]]
+    context: str = ""
+
+class ValuationReq(BaseModel):
+    ticker: str
+    growth_bull: float = Field(ge=-50, le=100)
+    growth_base: float = Field(ge=-50, le=100)
+    growth_bear: float = Field(ge=-50, le=100)
+    discount_pct: float = Field(ge=1, le=30)
+    terminal_pe: float = Field(ge=1, le=100)
+    w_bull: float = Field(default=25, ge=0, le=100)
+    w_base: float = Field(default=50, ge=0, le=100)
+    w_bear: float = Field(default=25, ge=0, le=100)
 
 class WatchlistAddReq(BaseModel):
     ticker: str
 
 class AlertAddReq(BaseModel):
-    ticker: str
+    ticker: str = Field(min_length=1, max_length=10)
     kind: str  # price_above | price_below | earnings
-    threshold: Optional[float] = None  # for price alerts
+    threshold: Optional[float] = Field(default=None, gt=0, le=1e7)  # for price alerts
     note: Optional[str] = None
 
 
@@ -154,96 +195,93 @@ async def get_user_from_token(authorization: Optional[str]) -> Dict[str, Any]:
 
 
 # ========== MARKET HELPERS ==========
-STRATEGIES = ["Cash Secured Put", "Covered Call", "Bull Put Spread", "Iron Condor", "Bear Call Spread", "Short Strangle"]
+CAPITAL_MAP = {"< $5k": 5000, "$5k–$25k": 25000, "$25k–$100k": 100000, "> $100k": 250000}
+ACCOUNT_MAP = {"Cash": "cash", "Margin (Reg T)": "reg_t", "Portfolio margin": "portfolio_margin", "IRA": "ira"}
+_RESULT_CACHE: Dict[str, tuple] = {}
+
+
+def cache_get(key: str, ttl: float):
+    v = _RESULT_CACHE.get(key)
+    if v and time.time() - v[0] < ttl:
+        return v[1]
+    return None
+
+
+def cache_set(key: str, val: Any):
+    _RESULT_CACHE[key] = (time.time(), val)
+    if len(_RESULT_CACHE) > 500:
+        for k in sorted(_RESULT_CACHE, key=lambda k: _RESULT_CACHE[k][0])[:100]:
+            _RESULT_CACHE.pop(k, None)
+
+
+def user_defaults(user: Dict[str, Any]) -> Dict[str, Any]:
+    q = user.get("questionnaire") or {}
+    return {
+        "account_size": float(CAPITAL_MAP.get(q.get("capital"), 25000)),
+        "account_type": ACCOUNT_MAP.get(q.get("account_type"), "reg_t"),
+    }
+
 
 def sparkline_from_candles(candles: List[Dict], points: int = 20) -> List[float]:
     if not candles:
         return []
-    closes = [c["c"] for c in candles[-points:]]
-    return [round(float(c), 2) for c in closes]
+    return [round(float(c["c"]), 2) for c in candles[-points:]]
 
-def build_option_strategy(ticker: str, name: str, sector: str, price: float, expiration: str, sparkline: List[float], iv: float = 0.35) -> Dict:
-    """Build an option strategy priced around the REAL current price, enriched with Greeks + payoff."""
-    strat = random.choice(STRATEGIES)
-    exp_days = {"daily": 1, "day": 1, "week": 7, "month": 30, "3months": 90, "custom": 14}.get(expiration, 30)
-    exp_date = (now_utc() + timedelta(days=exp_days)).strftime("%Y-%m-%d")
-    pop = random.randint(60, 90)
-    premium = round(price * random.uniform(0.008, 0.028), 2)
-    collateral = round(price * 100, 2)
-    collat_margin = round(collateral * 0.25, 2)
-    annual_pct_collat = round((premium * 100) / collateral * (365 / exp_days) * 100, 2)
-    annual_pct_margin = round((premium * 100) / collat_margin * (365 / exp_days) * 100, 2)
-    if strat == "Cash Secured Put":
-        legs = [{"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date, "qty": 1}]
-    elif strat == "Covered Call":
-        legs = [{"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date, "qty": 1}]
-    elif strat == "Bull Put Spread":
-        legs = [
-            {"action": "Sell", "type": "Put", "strike": round(price * 0.97, 2), "exp": exp_date, "qty": 1},
-            {"action": "Buy", "type": "Put", "strike": round(price * 0.92, 2), "exp": exp_date, "qty": 1},
-        ]
-    elif strat == "Bear Call Spread":
-        legs = [
-            {"action": "Sell", "type": "Call", "strike": round(price * 1.03, 2), "exp": exp_date, "qty": 1},
-            {"action": "Buy", "type": "Call", "strike": round(price * 1.08, 2), "exp": exp_date, "qty": 1},
-        ]
-    elif strat == "Iron Condor":
-        legs = [
-            {"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date, "qty": 1},
-            {"action": "Buy", "type": "Put", "strike": round(price * 0.90, 2), "exp": exp_date, "qty": 1},
-            {"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date, "qty": 1},
-            {"action": "Buy", "type": "Call", "strike": round(price * 1.10, 2), "exp": exp_date, "qty": 1},
-        ]
-    else:
-        legs = [
-            {"action": "Sell", "type": "Put", "strike": round(price * 0.95, 2), "exp": exp_date, "qty": 1},
-            {"action": "Sell", "type": "Call", "strike": round(price * 1.05, 2), "exp": exp_date, "qty": 1},
-        ]
-    # Determine net premium sign: credit strategies positive, debit negative.
-    credit_strats = {"Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Short Strangle"}
-    premium_net = premium if strat in credit_strats else -premium
-    legs = enrich_legs_with_greeks(legs, S=price, iv=iv, dte_days=exp_days)
-    payoff = analyze_strategy_payoff(strat, legs, S=price, premium_net=premium_net)
-    scenarios = scenario_matrix(price, premium_net=premium_net, legs=legs, iv=iv, dte_days=exp_days)
-    # Aggregate greeks across legs
-    net_greeks = {k: round(sum(l.get(k, 0) for l in legs), 3) for k in ("delta", "gamma", "theta", "vega")}
+
+async def ticker_snapshot(client: httpx.AsyncClient, ticker: str) -> Optional[Dict[str, Any]]:
+    """Cached quote + candles + earnings + metrics -> everything the engine needs."""
+    q, c, e, m = await asyncio.gather(
+        get_quote(client, ticker), get_candles(client, ticker, 120),
+        get_earnings(client, ticker), get_metrics(client, ticker), return_exceptions=True,
+    )
+    if not isinstance(q, dict) or not q.get("price"):
+        return None
+    c = c if isinstance(c, list) else []
+    e = e if isinstance(e, dict) else {}
+    m = m if isinstance(m, dict) else {}
     return {
-        "ticker": ticker, "name": name, "sector": sector, "price": round(price, 2),
-        "strategy": strat, "legs": legs, "premium": premium, "premium_net": premium_net,
-        "expiration": exp_date, "expiration_days": exp_days, "pop": pop,
-        "collateral": collateral, "collateral_margin": collat_margin,
-        "annual_pct_no_margin": annual_pct_collat, "annual_pct_margin": annual_pct_margin,
-        "sparkline": sparkline,
-        "max_profit": payoff["max_profit"], "max_loss": payoff["max_loss"], "breakevens": payoff["breakevens"],
-        "greeks": net_greeks, "iv_assumed": iv,
-        "scenario_matrix": scenarios,
-        "assumptions": {
-            "iv_assumed_pct": round(iv * 100, 1),
-            "risk_free_rate_pct": 4.5,
-            "model": "Black-Scholes European",
-            "pricing_note": "Theoretical. Real option quotes may differ.",
-        },
-        "data_source": {
-            "quote": "Finnhub (real-time, delayed <= 1 min)",
-            "option_pricing": "Theoretical via Black-Scholes",
-            "fetched_at": now_utc().isoformat(),
-        },
+        "ticker": ticker, "quote": q, "price": q["price"], "candles": c,
+        "info": UNIVERSE_INDEX.get(ticker, {"name": ticker, "sector": "Unknown"}),
+        "earnings_date": e.get("date"), "dividend_yield": m.get("dividend_yield"),
+        "vol": volatility_profile(c), "sparkline": sparkline_from_candles(c),
     }
 
-async def enrich_universe_pick(ticker: str, expiration: str) -> Optional[Dict]:
-    """Fetch REAL quote + a short sparkline for a universe ticker, return option strategy."""
-    try:
-        async with httpx.AsyncClient() as client:
-            q, c = await asyncio.gather(get_quote(client, ticker), get_candles(client, ticker, 30))
-        if not q or not q.get("price"):
-            return None
-        info = UNIVERSE_INDEX.get(ticker, {"name": ticker, "sector": "Unknown"})
-        spark = sparkline_from_candles(c) if c else []
-        return build_option_strategy(ticker, info.get("name", ticker), info.get("sector", "Unknown"), q["price"], expiration, spark)
-    except Exception as e:
-        logger.warning(f"enrich {ticker} failed: {e}")
-        return None
 
+def ideas_for_snapshot(snap: Dict[str, Any], strategies: List[str], dte: int, account_type: str) -> List[Dict]:
+    out = []
+    for s in strategies:
+        try:
+            idea = build_idea(snap["ticker"], snap["info"], s, snap["price"], snap["vol"], dte, account_type,
+                              snap["earnings_date"], snap["dividend_yield"])
+            idea["sparkline"] = snap["sparkline"]
+            out.append(idea)
+        except Exception as ex:
+            logger.warning(f"idea {snap['ticker']} {s} failed: {ex}")
+    return out
+
+
+def data_source_block() -> Dict[str, Any]:
+    return {
+        "quote": "Finnhub (real-time, delayed <= 1 min)",
+        "option_pricing": "Theoretical Black-Scholes mid + modeled slippage",
+        "liquidity": "Model estimate (no real option chain on free tier)",
+        "fetched_at": now_utc().isoformat(),
+    }
+
+
+async def warm_universe_loop():
+    """Pre-compute scans: keep the universe snapshot cache warm so screens return in ~1-2s."""
+    await asyncio.sleep(3)
+    while True:
+        async with httpx.AsyncClient() as client:
+            for s in UNIVERSE:
+                need_candles = market_cache_get(f"c:{s['ticker']}:120", 21600.0) is None
+                try:
+                    await ticker_snapshot(client, s["ticker"])
+                except Exception as ex:
+                    logger.warning(f"warm {s['ticker']} failed: {ex}")
+                await asyncio.sleep(13 if need_candles else 1)  # respect Polygon free tier (5/min)
+        await asyncio.sleep(20)
 
 # ========== AI ==========
 async def call_claude(system: str, prompt: str) -> str:
@@ -397,93 +435,169 @@ async def save_consent(req: ConsentReq, authorization: Optional[str] = Header(de
 
 
 # ========== SCREENER ROUTES ==========
+def _resolve_profile(req) -> str:
+    if req.profile in PROFILES:
+        return req.profile
+    risk, reward = (req.risk or "low"), (req.reward or "low")
+    if risk == "high" and reward == "high":
+        return "high_high"
+    if risk == "low" and reward == "high":
+        return "low_high"
+    return "low_low"  # high risk / low reward is excluded by design
+
+
+def _resolve_filters(req, profile: str) -> Dict[str, Any]:
+    f = default_filters(profile)
+    for k in f:
+        v = getattr(req, k, None)
+        if v is not None:
+            f[k] = v
+    return f
+
+
+async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dict[str, Any]:
+    d = user_defaults(user)
+    profile = _resolve_profile(req)
+    filters = _resolve_filters(req, profile)
+    account_type = req.account_type if req.account_type in ACCOUNT_TYPES else d["account_type"]
+    account_size = float(req.account_size or d["account_size"])
+    bias = req.bias or "any"
+    key = json.dumps({"p": profile, "f": filters, "a": account_type, "s": account_size, "b": bias, "d": dte,
+                      "t": [x["ticker"] for x in pool], "l": req.limit}, sort_keys=True)
+    hit = cache_get(key, 60)
+    if hit:
+        return hit
+    strategies = candidate_strategies(profile, bias)
+    async with httpx.AsyncClient() as client:
+        snaps = await asyncio.gather(*[ticker_snapshot(client, x["ticker"]) for x in pool])
+    snaps = [s for s in snaps if s]
+
+    def compute():
+        best, rejected, evaluated = [], {}, 0
+        for s in snaps:
+            ideas = ideas_for_snapshot(s, strategies, dte, account_type)
+            evaluated += len(ideas)
+            ok = []
+            for i in ideas:
+                fails = passes(i, filters, profile, account_size)
+                for r in fails:
+                    rejected[r] = rejected.get(r, 0) + 1
+                if not fails:
+                    ok.append(i)
+            if ok:
+                top = max(ok, key=lambda i: i["score"])
+                top["alternatives"] = [compact(i) for i in sorted(ok, key=lambda i: -i["score"]) if i is not top][:3]
+                best.append(top)
+        best.sort(key=lambda i: -i["score"])
+        return best, rejected, evaluated
+
+    results, rejected, evaluated = await asyncio.to_thread(compute)
+    results = results[: req.limit]
+    for r in results:
+        r["data_source"] = data_source_block()
+    out = {
+        "results": results, "profile": profile, "profile_label": PROFILES[profile]["label"],
+        "filters": filters, "account_type": account_type, "account_size": account_size, "bias": bias,
+        "stats": {"tickers_scanned": len(snaps), "ideas_evaluated": evaluated, "passed": len(results), "rejected_by": rejected},
+        "fetched_at": now_utc().isoformat(),
+    }
+    cache_set(key, out)
+    return out
+
+
+@api_router.get("/screener/profiles")
+async def screener_profiles(authorization: Optional[str] = Header(default=None)):
+    user = await get_user_from_token(authorization)
+    return {
+        "profiles": {k: {**v, "filters": default_filters(k), "strategies": candidate_strategies(k, "any")} for k, v in PROFILES.items()},
+        "strategies": STRATEGY_META, "account_types": list(ACCOUNT_TYPES), "defaults": user_defaults(user),
+    }
+
+
 @api_router.post("/screener/find-stocks")
 async def find_stocks(req: FindStockReq, authorization: Optional[str] = Header(default=None)):
-    await get_user_from_token(authorization)
-    pool = UNIVERSE[:]
-    if req.sectors:
-        pool = [s for s in pool if s["sector"] in req.sectors]
-    if not pool:
-        pool = UNIVERSE[:]
-    random.shuffle(pool)
-    # Fetch more than needed in parallel; keep first `limit` that return quotes.
-    candidates = pool[: min(len(pool), max(req.limit * 2, req.limit))]
-    enriched = await asyncio.gather(*[enrich_universe_pick(c["ticker"], req.expiration) for c in candidates])
-    results = [r for r in enriched if r][: req.limit]
+    user = await get_user_from_token(authorization)
+    pool = [s for s in UNIVERSE if not req.sectors or s["sector"] in req.sectors] or UNIVERSE[:]
+    return await run_scan(req, user, EXP_DAYS.get(req.expiration, 30), pool)
 
-    system = "You are a sharp options strategist. Reply with ONLY valid JSON, no markdown."
-    tickers = [r["ticker"] for r in results]
-    prompt = (
-        f"User seeks optionable stocks matching: risk={req.risk}, reward={req.reward}, "
-        f"expiration={req.expiration}, sectors={req.sectors or 'any'}.\n"
-        f"For each ticker in {tickers} (real quotes: {[(r['ticker'], r['price']) for r in results]}), "
-        f"give a 1-sentence rationale and a bullish/bearish/neutral bias. "
-        f'Reply JSON: {{"picks":[{{"ticker":"XX","bias":"bullish","rationale":"..."}}]}}'
-    )
-    txt = await call_claude(system, prompt)
-    ai = extract_json(txt) or {"picks": []}
-    ai_map = {p.get("ticker"): p for p in ai.get("picks", [])}
-    for r in results:
-        a = ai_map.get(r["ticker"], {})
-        r["bias"] = a.get("bias", "neutral")
-        r["rationale"] = a.get("rationale", f"Fits {req.risk} risk / {req.reward} reward profile.")
-    return {"results": results}
 
 @api_router.post("/screener/best-options")
 async def best_options(req: BestOptionsReq, authorization: Optional[str] = Header(default=None)):
-    await get_user_from_token(authorization)
-    period_map = {"day": "daily", "week": "week", "month": "month", "custom": "custom"}
-    exp = period_map.get(req.period, "week")
-    pool = random.sample(UNIVERSE, min(max(req.limit * 2, req.limit), len(UNIVERSE)))
-    enriched = await asyncio.gather(*[enrich_universe_pick(c["ticker"], exp) for c in pool])
-    results = [r for r in enriched if r][: req.limit]
-    results.sort(key=lambda r: r["annual_pct_no_margin"], reverse=True)
+    user = await get_user_from_token(authorization)
+    dte = req.custom_days if req.period == "custom" and req.custom_days else EXP_DAYS.get(req.period, 7)
+    out = await run_scan(req, user, max(1, min(int(dte), 365)), UNIVERSE[:])
+    return {**out, "top_pick": out["results"][0]["ticker"] if out["results"] else None}
 
-    system = "You are an options strategist. Reply with ONLY valid JSON."
-    prompt = (
-        f"For a {req.period} horizon with REAL current prices {[(r['ticker'], r['price']) for r in results]}, "
-        f"pick the top ticker and summarize in one line. "
-        f'JSON: {{"summary":"...","top_pick":"TICKER"}}'
+
+@api_router.post("/screener/explain")
+async def screener_explain(req: ExplainReq, authorization: Optional[str] = Header(default=None)):
+    """AI layer: ranks/explains engine output. Never produces numbers of its own."""
+    await get_user_from_token(authorization)
+    ideas = req.ideas[:10]
+    key = "explain:" + json.dumps({"i": ideas, "c": req.context}, sort_keys=True, default=str)
+    hit = cache_get(key, 1800)
+    if hit:
+        return hit
+    system = (
+        "You are an options research assistant. You NEVER invent prices, premiums or probabilities; "
+        "you only quote numbers given to you. Educational research, not investment advice. Reply ONLY valid JSON."
     )
-    txt = await call_claude(system, prompt)
-    ai = extract_json(txt) or {}
-    return {"results": results, "ai_summary": ai.get("summary", "Top yield plays this period."), "top_pick": ai.get("top_pick")}
+    prompt = (
+        f"Context: {req.context}. Engine output (deterministic): {json.dumps(ideas, default=str)}.\n"
+        "For each ticker write: why this setup fits / why now (1 sentence) and the key thing that could go wrong (1 sentence). "
+        "Then a one-line overall summary.\n"
+        '{"summary":"...","picks":[{"ticker":"XX","why":"...","risk":"..."}]}'
+    )
+    ai = extract_json(await call_claude(system, prompt)) or {}
+    out = {"summary": ai.get("summary", ""), "picks": ai.get("picks", []), "generated_at": now_utc().isoformat()}
+    if out["summary"] or out["picks"]:
+        cache_set(key, out)
+    return out
+
 
 @api_router.post("/screener/ticker-options")
 async def ticker_options(req: TickerOptionsReq, authorization: Optional[str] = Header(default=None)):
-    await get_user_from_token(authorization)
-    tk = req.ticker.upper()
-    opt = await enrich_universe_pick(tk, req.expiration_range)
-    if not opt:
-        # Try outside universe
-        async with httpx.AsyncClient() as client:
-            q, c = await asyncio.gather(get_quote(client, tk), get_candles(client, tk, 30))
-        if not q or not q.get("price"):
-            raise HTTPException(status_code=404, detail=f"No live quote found for {tk}")
-        spark = sparkline_from_candles(c) if c else []
-        opt = build_option_strategy(tk, tk, "Unknown", q["price"], req.expiration_range, spark)
+    user = await get_user_from_token(authorization)
+    tk = req.ticker.upper().strip()
+    async with httpx.AsyncClient() as client:
+        snap = await ticker_snapshot(client, tk)
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"No live quote found for {tk}")
+    d = user_defaults(user)
+    profile = req.profile if req.profile in PROFILES else "any"
+    account_type = req.account_type if req.account_type in ACCOUNT_TYPES else d["account_type"]
+    account_size = float(req.account_size or d["account_size"])
+    filters = _resolve_filters(req, profile if profile != "any" else "high_high")
+    dte = EXP_DAYS.get(req.expiration_range, 30)
+    strategies = STRATEGIES if (not req.strategy or req.strategy == "auto") else [req.strategy]
+    if req.strategy and req.strategy != "auto" and req.strategy not in STRATEGY_META:
+        raise HTTPException(status_code=400, detail="Unknown strategy")
+    if profile != "any" and (not req.strategy or req.strategy == "auto"):
+        strategies = candidate_strategies(profile, "any")
+    ideas = await asyncio.to_thread(ideas_for_snapshot, snap, strategies, dte, account_type)
+    if not ideas:
+        raise HTTPException(status_code=500, detail="Engine could not price this ticker")
+    graded = [(i, passes(i, filters, profile if profile != "any" else "high_high", account_size)) for i in ideas]
+    ok = [i for i, f in graded if not f]
+    chosen = max(ok or ideas, key=lambda i: i["score"])
+    chosen["passes_filters"] = bool(ok) and chosen in ok
+    chosen["failed_filters"] = next(f for i, f in graded if i is chosen)
+    chosen["alternatives"] = [compact(i, f) for i, f in sorted(graded, key=lambda x: -x[0]["score"]) if i is not chosen]
+    chosen["data_source"] = data_source_block()
+    chosen["account_size"] = account_size
+    chosen["filters"] = filters
+    return {"result": chosen}
 
-    system = "You are an options strategist. Reply with ONLY valid JSON, no markdown."
-    prompt = (
-        f"Analyze {tk} at REAL price ${opt['price']} for {req.expiration_range} options play. "
-        f"Give a strategy recommendation summary. "
-        f'JSON: {{"summary":"...","risk_note":"...","entry_tip":"..."}}'
-    )
-    txt = await call_claude(system, prompt)
-    ai = extract_json(txt) or {}
-    opt["ai_summary"] = ai.get("summary", f"Best {req.expiration_range} play for {tk}.")
-    opt["risk_note"] = ai.get("risk_note", "Monitor earnings and macro events.")
-    opt["entry_tip"] = ai.get("entry_tip", "Enter mid-week for optimal theta.")
-    return {"result": opt}
 
 @api_router.post("/screener/stock-analysis")
 async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = Header(default=None)):
-    await get_user_from_token(authorization)
-    tk = req.ticker.upper()
+    user = await get_user_from_token(authorization)
+    tk = req.ticker.upper().strip()
     bundle = await fetch_stock_bundle(tk)
     if not bundle.get("price"):
         raise HTTPException(status_code=404, detail=f"No live quote found for {tk}")
-
+    d = user_defaults(user)
+    account_size = float(req.account_size or d["account_size"])
     price = bundle["price"]
     candles = bundle["candles"]
     sma_20 = bundle["sma_20"] or round(price, 2)
@@ -491,13 +605,10 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
     rsi_val = bundle["rsi"] or 50
     sup = bundle["support"] or round(price * 0.94, 2)
     res = bundle["resistance"] or round(price * 1.07, 2)
+    vol = volatility_profile(candles)
 
     if req.purpose in ("day", "swing"):
-        # Derive buy/sell/stop from real levels
-        atr_proxy = (res - sup) / 10 if res > sup else price * 0.01
-        buy = round(max(sup, price - atr_proxy), 2)
-        sell = round(min(res, price + atr_proxy * 2), 2)
-        stop = round(sup * 0.97, 2)
+        plan = trade_plan(candles, price, sup, res, bundle["trend"], rsi_val, req.purpose, account_size, req.risk_pct, req.min_rr)
         sent = bundle.get("news_sentiment") or {}
         if sent and sent.get("bullish", 0) > sent.get("bearish", 0):
             market_sentiment = "Bullish"
@@ -505,26 +616,27 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
             market_sentiment = "Bearish"
         else:
             market_sentiment = "Neutral"
+        long_side = plan["direction"] == "long"
         resp = {
-            "ticker": tk, "name": bundle["name"], "price": price,
-            "purpose": req.purpose,
-            "candles": candles,
-            "buy_point": buy, "sell_point": sell, "stop_loss": stop,
-            "support": sup, "resistance": res,
-            "sma_20": sma_20, "sma_50": sma_50, "rsi": rsi_val,
-            "short_float_pct": None,  # premium data, left null on free tier
-            "short_interest": None,
-            "option_volume": None,
-            "candlestick_patterns": bundle["candlestick_patterns"],
-            "chart_patterns": bundle["chart_patterns"],
+            "ticker": tk, "name": bundle["name"], "price": price, "purpose": req.purpose, "candles": candles,
+            "trade_plan": plan,
+            "buy_point": plan["entry"] if long_side else plan["target"],
+            "sell_point": plan["target"] if long_side else plan["entry"],
+            "stop_loss": plan["stop"],
+            "scenarios": price_scenarios(price, vol["hv20"], 1 if req.purpose == "day" else 10, plan),
+            "support": sup, "resistance": res, "sma_20": sma_20, "sma_50": sma_50, "rsi": rsi_val,
+            "trend": bundle["trend"], "volatility": vol,
+            "short_float_pct": None, "short_interest": None, "option_volume": None,
+            "short_data_note": "Short interest is exchange-reported twice a month (delayed); real-time borrow data needs a paid vendor.",
+            "candlestick_patterns": bundle["candlestick_patterns"], "chart_patterns": bundle["chart_patterns"],
             "market_sentiment": market_sentiment,
-            "intrinsic_value": bundle.get("price_target") or round(price, 2),
-            "profit_probability": max(50, min(90, int(50 + (sma_20 - sma_50) / price * 500 if sma_20 and sma_50 else 50))),
+            "pdt_note": "Check current FINRA pattern-day-trader rules before frequent day trades in a small margin account." if req.purpose == "day" else None,
         }
-        system = "You are a short-term trading analyst. Reply ONLY valid JSON."
+        system = "You are a short-term trading research assistant. Quote only the numbers given. Not investment advice. Reply ONLY valid JSON."
         prompt = (
-            f"Analyze {tk} for {req.purpose} trading. Real-time data: price ${price}, SMA20 ${sma_20}, SMA50 ${sma_50}, "
-            f"RSI {rsi_val}, support ${sup}, resistance ${res}, trend {bundle['trend']}, patterns {bundle['candlestick_patterns']}. "
+            f"Explain this {req.purpose} {plan['direction']} setup for {tk}. Engine data: price ${price}, SMA20 ${sma_20}, SMA50 ${sma_50}, "
+            f"RSI {rsi_val}, support ${sup}, resistance ${res}, trend {bundle['trend']}, patterns {bundle['candlestick_patterns'] + bundle['chart_patterns']}, "
+            f"plan entry ${plan['entry']} stop ${plan['stop']} target ${plan['target']} R:R {plan['reward_risk']}. "
             f'JSON: {{"summary":"...","verdict":"BUY|SELL|HOLD","confidence":"low|med|high"}}'
         )
     else:
@@ -533,51 +645,61 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
         pt = bundle.get("price_target")
         eps = metrics.get("eps_ttm") or 0
         pe = metrics.get("pe_ttm") or 0
-        intrinsic = round((pt or price * (1.1 if (metrics.get("revenue_growth_ttm") or 0) > 10 else 1.0)), 2)
+        dcf_in = default_dcf_inputs(metrics)
+        valuation = dcf_valuation(price, eps, dcf_in["growth"], dcf_in["discount_pct"], dcf_in["terminal_pe"], dcf_in["weights"])
         resp = {
-            "ticker": tk, "name": bundle["name"], "price": price,
-            "purpose": "long",
-            "candles": candles,
-            "intrinsic_value": intrinsic,
-            "price_target": pt or round(price * 1.15, 2),
-            "stock_trend": bundle["trend"],
-            "earnings_date": earnings.get("date"),
-            "earnings_eps_estimate": earnings.get("eps_estimate"),
-            "revenue_billions": None,  # exact value needs reported financials call (left optional)
-            "net_cash_billions": None,
-            "net_profit_billions": None,
-            "debt_billions": None,
-            "pe_ratio": pe,
-            "eps_ttm": eps,
-            "roe": metrics.get("roe_ttm"),
-            "revenue_growth_pct": metrics.get("revenue_growth_ttm"),
-            "net_margin_pct": metrics.get("net_profit_margin"),
-            "beta": metrics.get("beta"),
-            "fifty_two_week_high": metrics.get("52w_high"),
-            "fifty_two_week_low": metrics.get("52w_low"),
+            "ticker": tk, "name": bundle["name"], "price": price, "purpose": "long", "candles": candles,
+            "valuation": valuation, "valuation_inputs": dcf_in,
+            "intrinsic_value": valuation["weighted_value"] if valuation else None,
+            "price_target": pt, "stock_trend": bundle["trend"],
+            "earnings_date": earnings.get("date"), "earnings_eps_estimate": earnings.get("eps_estimate"),
+            "pe_ratio": pe, "eps_ttm": eps, "roe": metrics.get("roe_ttm"),
+            "revenue_growth_pct": metrics.get("revenue_growth_ttm"), "net_margin_pct": metrics.get("net_profit_margin"),
+            "beta": metrics.get("beta"), "dividend_yield": metrics.get("dividend_yield"),
+            "fifty_two_week_high": metrics.get("52w_high"), "fifty_two_week_low": metrics.get("52w_low"),
             "business_moat": "Wide" if (metrics.get("roe_ttm") or 0) > 20 else ("Narrow" if (metrics.get("roe_ttm") or 0) > 10 else "None"),
             "competitors": bundle["peers"][:4],
             "analyst_ratings": bundle["analyst_ratings"] or {"buy": 0, "hold": 0, "sell": 0},
-            "buy_point": round(price * 0.92, 2),
-            "sell_point": round((pt or price * 1.3), 2),
+            "buy_point": valuation["buy_zone_below"] if valuation else None,
+            "sell_point": valuation["sell_zone_above"] if valuation else None,
         }
-        system = "You are a long-term value investor. Reply ONLY valid JSON."
+        system = "You are a long-term research assistant. Quote only the numbers given. Not investment advice. Reply ONLY valid JSON."
         prompt = (
-            f"Give a long-term thesis for {tk}. Real-time data: price ${price}, P/E {pe}, EPS ${eps}, "
-            f"ROE {metrics.get('roe_ttm')}%, revenue growth {metrics.get('revenue_growth_ttm')}%, "
-            f"price target ${pt}, peers {bundle['peers'][:3]}, "
-            f"analyst ratings {bundle['analyst_ratings']}. "
+            f"Give a long-term thesis for {tk}. Data: price ${price}, P/E {pe}, EPS ${eps}, ROE {metrics.get('roe_ttm')}%, "
+            f"revenue growth {metrics.get('revenue_growth_ttm')}%, analyst target ${pt}, peers {bundle['peers'][:3]}, "
+            f"ratings {bundle['analyst_ratings']}, DCF weighted value {valuation['weighted_value'] if valuation else 'n/a'}. "
             f'JSON: {{"summary":"...","verdict":"BUY|SELL|HOLD","confidence":"low|med|high","moat_note":"..."}}'
         )
 
-    txt = await call_claude(system, prompt)
-    ai = extract_json(txt) or {}
-    resp["ai_summary"] = ai.get("summary", f"{tk} shows a solid setup for {req.purpose} horizon.")
+    ai_key = f"sa:{tk}:{req.purpose}"
+    ai = cache_get(ai_key, 600)
+    if ai is None:
+        ai = extract_json(await call_claude(system, prompt)) or {}
+        if ai:
+            cache_set(ai_key, ai)
+    resp["ai_summary"] = ai.get("summary", f"{tk} engine readout for the {req.purpose} horizon.")
     resp["verdict"] = ai.get("verdict", "HOLD")
     resp["confidence"] = ai.get("confidence", "med")
     if req.purpose == "long":
-        resp["moat_note"] = ai.get("moat_note", "Durable competitive advantage.")
+        resp["moat_note"] = ai.get("moat_note", "")
+    resp["data_source"] = data_source_block()
     return {"result": resp}
+
+
+@api_router.post("/screener/valuation")
+async def valuation_route(req: ValuationReq, authorization: Optional[str] = Header(default=None)):
+    await get_user_from_token(authorization)
+    tk = req.ticker.upper().strip()
+    async with httpx.AsyncClient() as client:
+        q, m = await asyncio.gather(get_quote(client, tk), get_metrics(client, tk))
+    if not q:
+        raise HTTPException(status_code=404, detail=f"No live quote found for {tk}")
+    v = dcf_valuation(q["price"], (m or {}).get("eps_ttm"),
+                      {"bull": req.growth_bull, "base": req.growth_base, "bear": req.growth_bear},
+                      req.discount_pct, req.terminal_pe, {"bull": req.w_bull, "base": req.w_base, "bear": req.w_bear})
+    if not v:
+        raise HTTPException(status_code=400, detail="DCF needs positive earnings (EPS)")
+    return {"valuation": v, "price": q["price"]}
 
 @api_router.get("/screener/stocks")
 async def list_stocks():
@@ -642,6 +764,8 @@ async def alerts_add(req: AlertAddReq, authorization: Optional[str] = Header(def
     user = await get_user_from_token(authorization)
     if req.kind not in ("price_above", "price_below", "earnings"):
         raise HTTPException(status_code=400, detail="Invalid alert kind")
+    if req.kind != "earnings" and req.threshold is None:
+        raise HTTPException(status_code=400, detail="Price alerts need a positive threshold")
     alert = {
         "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
         "user_id": user["user_id"],
@@ -903,6 +1027,7 @@ async def startup():
         await db.alerts.create_index("alert_id", unique=True)
     except Exception as e:
         logger.warning(f"index: {e}")
+    asyncio.create_task(warm_universe_loop())
     logger.info("OptiScreen API ready")
 
 @app.on_event("shutdown")

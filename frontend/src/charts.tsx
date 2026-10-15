@@ -11,9 +11,9 @@ function payoffAt(S: number, legs: Leg[], netPremium: number): number {
   // netPremium > 0 = credit received; < 0 = debit paid
   let totalIntrinsic = 0;
   for (const l of legs) {
-    const isCall = l.type.toLowerCase() === "call";
+    const t = l.type.toLowerCase();
     const sign = l.action.toLowerCase() === "buy" ? 1 : -1;
-    const intrinsic = isCall ? Math.max(S - l.strike, 0) : Math.max(l.strike - S, 0);
+    const intrinsic = t === "stock" ? S - l.strike : t === "call" ? Math.max(S - l.strike, 0) : Math.max(l.strike - S, 0);
     totalIntrinsic += sign * intrinsic * (l.qty ?? 1);
   }
   return (netPremium + totalIntrinsic) * 100;

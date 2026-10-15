@@ -37,6 +37,7 @@ const SINGLES: Single[] = [
   { id: "capital", q: "Approximate investable capital?", opts: ["< $5k", "$5k–$25k", "$25k–$100k", "> $100k"] },
   { id: "max_loss", q: "Maximum acceptable single-trade loss?", opts: ["< $100", "$100–$500", "$500–$2k", "> $2k"] },
   { id: "options_level", q: "Options approval level?", opts: ["Not approved", "Level 1-2", "Level 3+", "Full access"] },
+  { id: "account_type", q: "Account type? (sets which strategies & collateral apply)", opts: ["Cash", "Margin (Reg T)", "Portfolio margin", "IRA"] },
 ];
 
 export default function Questionnaire() {

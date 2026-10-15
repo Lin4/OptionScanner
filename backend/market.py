@@ -90,7 +90,7 @@ async def get_quote(client: httpx.AsyncClient, ticker: str) -> Optional[Dict[str
 async def get_candles(client: httpx.AsyncClient, ticker: str, days: int = 30) -> List[Dict[str, float]]:
     """Return list of {o,h,l,c,v} daily candles. Polygon-first (free tier works), fallback Alpha Vantage."""
     key = f"c:{ticker}:{days}"
-    hit = _cache_get(key, 300.0)
+    hit = _cache_get(key, 21600.0)  # daily bars: refresh every 6h
     if hit is not None: return hit
 
     # Polygon aggs (free tier gives 2-year history delayed)

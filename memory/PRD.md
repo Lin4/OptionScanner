@@ -49,6 +49,21 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - Voice: /tts/generate, /stt/transcribe
 - PayPal: /create-order, /capture-order, /config
 
+## Phase A (Untitled.docx plan) — DONE
+- `engine.py`: deterministic engine (code calculates, AI explains). 13 strategies, mid + slippage + fees pricing, lognormal POP, EV vs realized vol, numeric payoff stats.
+- Risk profiles low_low / low_high / high_high + sliders (max loss %, min POP, min ROC, min IV rank, min OI, max spread %, skip earnings, bias).
+- Liquidity (OI/volume/bid-ask) = MODEL ESTIMATE (labelled). IV = HV-blended estimate; IV rank from rolling HV.
+- Collateral/ROC/annualized for Cash, IRA, Reg T, Portfolio margin (naked blocked in cash/IRA).
+- Events: earnings in window, dividend early-assignment, pin risk, assignment notes.
+- Swing/day trade plan: ATR stops, support/resistance, min R:R, position sizing, short-side view, bull/base/bear scenarios.
+- Long-term: editable DCF bull/base/bear + buy/sell zones (`/screener/valuation`).
+- Speed: background pre-warm of universe, 6h candle cache, 60s scan cache, AI explanations async via `/screener/explain` (cached 30m).
+- Alert threshold validation.
+
+## Backlog (from plan)
+- Phase 2: long-term research page (ownership, dividends history, filings risks, price-target dispersion), paper trading + public track record, IV/setup alerts, nav order (stock screening first), tier data rules.
+- Phase 3: backtesting, position monitoring, broker connection, trade journal, intraday tools, real options data feed.
+
 ## Not in MVP
 - Automatic order execution
 - Real option-chain premiums (currently theoretical via Black-Scholes)

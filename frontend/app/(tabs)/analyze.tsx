@@ -1,7 +1,7 @@
-import React, { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
+import React, { useEffect, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import Icon from "@react-native-vector-icons/feather";
 
 import { api } from "@/src/api";
@@ -12,6 +12,9 @@ import { MetricRow, Badge } from "@/src/parts";
 import { PayoffChart, FreshnessPill, LoadingSkeleton } from "@/src/charts";
 import { useTTS, useSTT } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
+import { ACCOUNTS, Chips, Label, OptionInsights, accountLabel } from "@/src/screen";
+
+const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Short Strangle"];
 
 type Lab = "day" | "swing" | "long" | "options";
 
@@ -24,21 +27,63 @@ export default function Analyze() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
   const [onWatchlist, setOnWatchlist] = useState(false);
+  const [strategy, setStrategy] = useState("auto");
+  const [acct, setAcct] = useState("reg_t");
+  const [acctSize, setAcctSize] = useState("25000");
+  const [riskPct, setRiskPct] = useState("1");
+  const [minRR, setMinRR] = useState("2");
+  const params = useLocalSearchParams<{ ticker?: string; strategy?: string; range?: string }>();
 
-  const run = async () => {
-    if (!ticker.trim()) { toast("Enter a ticker", "error"); return; }
-    const tk = ticker.trim().toUpperCase();
+  useEffect(() => {
+    api("/api/screener/profiles").then((r) => {
+      if (r?.defaults) { setAcct(r.defaults.account_type); setAcctSize(String(r.defaults.account_size)); }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (params.ticker) {
+      setLab("options"); setTicker(String(params.ticker));
+      if (params.strategy) setStrategy(String(params.strategy));
+      if (params.range) setRange(String(params.range));
+      run({ tk: String(params.ticker), strat: params.strategy ? String(params.strategy) : undefined, rng: params.range ? String(params.range) : undefined, l: "options" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.ticker, params.strategy, params.range]);
+
+  const run = async (o: { tk?: string; strat?: string; rng?: string; l?: Lab } = {}) => {
+    const tk = (o.tk || ticker).trim().toUpperCase();
+    if (!tk) { toast("Enter a ticker", "error"); return; }
+    const which = o.l || lab;
     setLoading(true); setData(null);
     try {
-      if (lab === "options") {
-        const r = await api("/api/screener/ticker-options", { method: "POST", body: JSON.stringify({ ticker: tk, expiration_range: range }) });
+      if (which === "options") {
+        const r = await api("/api/screener/ticker-options", { method: "POST", body: JSON.stringify({
+          ticker: tk, expiration_range: o.rng || range, strategy: o.strat || strategy, account_type: acct,
+          account_size: parseFloat(acctSize) || undefined,
+        }) });
         setData(r.result);
+        explainOne(r.result);
       } else {
-        const r = await api("/api/screener/stock-analysis", { method: "POST", body: JSON.stringify({ ticker: tk, purpose: lab }) });
+        const r = await api("/api/screener/stock-analysis", { method: "POST", body: JSON.stringify({
+          ticker: tk, purpose: which, account_size: parseFloat(acctSize) || undefined,
+          risk_pct: parseFloat(riskPct) || 1, min_rr: parseFloat(minRR) || 2,
+        }) });
         setData(r.result);
       }
     } catch (e: any) { toast(e.message || "Failed", "error"); }
     finally { setLoading(false); }
+  };
+
+  const explainOne = async (r: any) => {
+    try {
+      const a = await api("/api/screener/explain", { method: "POST", body: JSON.stringify({
+        ideas: [{ ticker: r.ticker, strategy: r.strategy, price: r.price, pop: r.pop, roc_pct: r.roc_pct, max_profit: r.max_profit,
+          max_loss: r.max_loss, breakevens: r.breakevens, iv_rank: r.volatility?.iv_rank, liquidity: r.liquidity?.grade,
+          earnings_in_window: r.events?.earnings_in_window, dte: r.expiration_days, account: r.account_type }],
+        context: `Single-ticker options analysis, ${accountLabel(r.account_type)} account`,
+      }) });
+      setData((d: any) => d && d.ticker === r.ticker ? { ...d, ai_summary: a.summary || a.picks?.[0]?.why, risk_note: a.picks?.[0]?.risk } : d);
+    } catch {}
   };
 
   const addToWatchlist = async () => {
@@ -93,7 +138,33 @@ export default function Analyze() {
               </View>
             </View>
           ) : null}
-          <Button testID="analyze-run" label={loading ? "Analyzing…" : "Analyze"} onPress={run} loading={loading} />
+          {lab === "options" ? (
+            <>
+              <Label>Strategy</Label>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm, paddingBottom: spacing.md }}>
+                {STRATS.map((o) => {
+                  const active = strategy === o;
+                  return (
+                    <Pressable key={o} testID={`strat-${o}`} onPress={() => setStrategy(o)} style={[styles.chip, active && styles.chipActive]}>
+                      <Text style={[styles.chipText, active && styles.chipTextActive]}>{o === "auto" ? "Auto (best fit)" : o}</Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              <Label>Account type</Label>
+              <Chips testKey="an-acct" value={acct} onChange={setAcct} options={ACCOUNTS} />
+            </>
+          ) : null}
+          {lab === "day" || lab === "swing" ? (
+            <>
+              <Input testID="an-account-size" label="Account size ($)" value={acctSize} onChangeText={(v) => setAcctSize(v.replace(/[^0-9.]/g, ""))} keyboardType="numeric" />
+              <Label>Risk per trade (% of account)</Label>
+              <Chips testKey="risk-pct" value={riskPct} onChange={setRiskPct} options={["0.5", "1", "2", "3"].map((v) => ({ id: v, label: `${v}%` }))} />
+              <Label>Minimum reward : risk</Label>
+              <Chips testKey="min-rr" value={minRR} onChange={setMinRR} options={["1.5", "2", "3"].map((v) => ({ id: v, label: `${v}:1` }))} />
+            </>
+          ) : null}
+          <Button testID="analyze-run" label={loading ? "Analyzing…" : "Analyze"} onPress={() => run()} loading={loading} />
         </View>
 
         {loading && <View style={{ padding: spacing.xl }}><LoadingSkeleton lines={5} /></View>}
@@ -162,12 +233,13 @@ function OptionsLab({ r }: { r: any }) {
         <Badge text={`exp ${r.expiration}`} kind="info" />
       </View>
 
+      {r.passes_filters === false ? <Text style={[styles.rationale, { color: colors.warning }]}>Doesn&apos;t pass your filters: {(r.failed_filters || []).join(", ")}</Text> : null}
       {/* Hero numbers */}
       <View style={styles.heroRow}>
         <View style={styles.heroBox}>
           <Text style={styles.heroLabel}>Max profit</Text>
           <Text style={[styles.heroVal, { color: colors.success }]}>
-            {r.max_profit != null ? `$${r.max_profit}` : "—"}
+            {r.max_profit != null ? `$${r.max_profit}` : "Unlimited"}
           </Text>
         </View>
         <View style={styles.heroBox}>
@@ -196,8 +268,10 @@ function OptionsLab({ r }: { r: any }) {
       <Text style={styles.sectionLabel}>Metrics</Text>
       <MetricRow label="Breakevens" value={(r.breakevens || []).map((b: number) => `$${b}`).join(" / ") || "—"} />
       <MetricRow label="Premium (net)" value={`${r.premium_net > 0 ? "+" : ""}$${r.premium_net}`} color={r.premium_net > 0 ? colors.success : colors.error} />
-      <MetricRow label="Collateral" value={`$${r.collateral}`} />
-      <MetricRow label="APR" value={`${r.annual_pct_no_margin}%`} color={colors.success} />
+      <MetricRow label={`Collateral (${accountLabel(r.account_type)})`} value={r.collateral != null ? `$${r.collateral}` : "Not allowed"} />
+      <MetricRow label="Return on capital" value={r.roc_pct != null ? `${r.roc_pct}%` : "Unlimited"} color={colors.success} />
+      <MetricRow label="Annualized (hypothetical)" value={r.annualized_pct != null ? `${r.annualized_pct}%` : "—"} />
+      <MetricRow label="Expires" value={`${r.expiration} (${r.expiration_days}d)`} />
 
       <View style={styles.subTabs}>
         {(["basic", "greeks", "scenarios"] as const).map((t) => (
@@ -215,9 +289,9 @@ function OptionsLab({ r }: { r: any }) {
             <View key={i} style={styles.legRow}>
               <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
                 <Badge text={l.action} kind={l.action === "Buy" ? "success" : "error"} />
-                <Text style={styles.legText}>{l.type} @ ${l.strike}</Text>
+                <Text style={styles.legText}>{l.qty > 1 ? `${l.qty}× ` : ""}{l.type} @ ${l.strike}</Text>
               </View>
-              <Text style={styles.legTheo}>theo ${l.theo_price}</Text>
+              <Text style={styles.legTheo}>{l.type === "Stock" ? "100 shares" : `mid $${l.mid} · fill $${l.fill}`}</Text>
             </View>
           ))}
         </View>
@@ -255,8 +329,22 @@ function OptionsLab({ r }: { r: any }) {
         </View>
       )}
 
-      {r.risk_note ? <Text style={styles.rationale}>Risk: {r.risk_note}</Text> : null}
-      {r.entry_tip ? <Text style={styles.rationale}>Tip: {r.entry_tip}</Text> : null}
+      <OptionInsights r={r} />
+      {r.risk_note ? <Text style={styles.rationale}>AI risk note: {r.risk_note}</Text> : null}
+      {(r.alternatives || []).length ? (
+        <>
+          <Text style={styles.sectionLabel}>Other strategies compared</Text>
+          {r.alternatives.slice(0, 6).map((a: any) => (
+            <View key={a.strategy} style={styles.altRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.legText}>{a.strategy}</Text>
+                <Text style={styles.legTheo}>POP {a.pop}% · ROC {a.roc_pct != null ? `${a.roc_pct}%` : "∞"} · max loss {a.max_loss != null ? `$${a.max_loss}` : "undef"}</Text>
+              </View>
+              <Badge text={a.passes ? "passes" : a.failed?.[0] || "filtered"} kind={a.passes ? "success" : "warn"} />
+            </View>
+          ))}
+        </>
+      ) : null}
       {r.assumptions ? (
         <Text style={styles.disclaimer}>Assumptions: {r.assumptions.model} • IV {r.assumptions.iv_assumed_pct}% • risk-free {r.assumptions.risk_free_rate_pct}%.</Text>
       ) : null}
@@ -280,11 +368,7 @@ function ShortForm({ r }: { r: any }) {
         <Badge text={r.verdict || "HOLD"} kind={r.verdict === "BUY" ? "success" : r.verdict === "SELL" ? "error" : "warn"} />
         {r.confidence ? <Badge text={`${r.confidence} conf.`} kind="info" /> : null}
       </View>
-      <Text style={styles.sectionLabel}>Entry plan</Text>
-      <MetricRow label="Buy point" value={`$${r.buy_point}`} color={colors.success} />
-      <MetricRow label="Sell point" value={`$${r.sell_point}`} color={colors.brandPrimary} />
-      <MetricRow label="Stop loss" value={`$${r.stop_loss}`} color={colors.error} />
-      <MetricRow label="Reward / Risk" value={`${((r.sell_point - r.buy_point) / Math.max(0.01, r.buy_point - r.stop_loss)).toFixed(2)}x`} />
+      <TradePlan r={r} />
       <Text style={styles.sectionLabel}>Technicals</Text>
       <MetricRow label="SMA 20 / 50" value={`$${r.sma_20} / $${r.sma_50}`} />
       <MetricRow label="RSI (14)" value={String(r.rsi)} />
@@ -299,6 +383,98 @@ function ShortForm({ r }: { r: any }) {
   );
 }
 
+function TradePlan({ r }: { r: any }) {
+  const p = r.trade_plan;
+  if (!p) return null;
+  const long = p.direction === "long";
+  return (
+    <View>
+      <Text style={styles.sectionLabel}>{long ? "Trade plan · long" : "Trade plan · short side"}</Text>
+      <View style={styles.heroRow}>
+        <View style={styles.heroBox}><Text style={styles.heroLabel}>{long ? "Buy" : "Sell short"}</Text><Text style={styles.heroValSm}>${p.entry}</Text></View>
+        <View style={styles.heroBox}><Text style={styles.heroLabel}>Stop</Text><Text style={[styles.heroValSm, { color: colors.error }]}>${p.stop}</Text></View>
+        <View style={styles.heroBox}><Text style={styles.heroLabel}>{long ? "Target" : "Cover"}</Text><Text style={[styles.heroValSm, { color: colors.success }]}>${p.target}</Text></View>
+      </View>
+      <MetricRow label="Reward : risk" value={`${p.reward_risk}:1`} />
+      <MetricRow label="ATR (14)" value={`$${p.atr}`} />
+      <Text style={styles.sectionLabel}>Position sizing</Text>
+      <MetricRow label="Shares" value={String(p.shares)} />
+      <MetricRow label="Position value" value={`$${p.position_value.toLocaleString()}`} />
+      <MetricRow label={`Max loss (${p.risk_pct}% of account)`} value={`$${p.max_loss_dollars.toLocaleString()}`} color={colors.error} />
+      <MetricRow label="Potential gain" value={`$${p.potential_gain_dollars.toLocaleString()}`} color={colors.success} />
+      <View style={styles.logicBox}>
+        <Text style={styles.logicTitle}>How these levels were calculated</Text>
+        {(p.logic || []).map((t: string, i: number) => <Text key={i} style={styles.logicText}>{i + 1}. {t}</Text>)}
+      </View>
+      {r.pdt_note ? <Text style={styles.disclaimer}>{r.pdt_note}</Text> : null}
+      <Text style={styles.sectionLabel}>Bull · base · bear</Text>
+      <ScenarioCards rows={r.scenarios || []} pnlKey="plan_pnl" />
+      <Text style={styles.disclaimer}>±1 standard deviation moves from 20-day historical volatility over the holding period. Probabilities are model estimates, not predictions.</Text>
+    </View>
+  );
+}
+
+function ScenarioCards({ rows, pnlKey }: { rows: any[]; pnlKey?: string }) {
+  return (
+    <View style={styles.heroRow}>
+      {rows.map((s) => {
+        const tone = s.name === "Bull" ? colors.success : s.name === "Bear" ? colors.error : colors.onSurface;
+        return (
+          <View key={s.name} testID={`scen-${s.name}`} style={styles.heroBox}>
+            <Text style={[styles.heroLabel, { color: tone }]}>{s.name}</Text>
+            <Text style={styles.heroValSm}>${s.price ?? s.value}</Text>
+            <Text style={styles.legTheo}>{s.move_pct ?? s.upside_pct}% · {s.probability_pct ?? s.weight_pct}%</Text>
+            {pnlKey && s[pnlKey] != null ? <Text style={[styles.legTheo, { color: s[pnlKey] >= 0 ? colors.success : colors.error }]}>P&L ${s[pnlKey]}</Text> : null}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function ValuationEditor({ r }: { r: any }) {
+  const inp = r.valuation_inputs;
+  const [v, setV] = useState<any>(r.valuation);
+  const [g, setG] = useState({ bull: String(inp?.growth?.bull ?? 15), base: String(inp?.growth?.base ?? 8), bear: String(inp?.growth?.bear ?? 0) });
+  const [disc, setDisc] = useState(String(inp?.discount_pct ?? 9));
+  const [tpe, setTpe] = useState(String(inp?.terminal_pe ?? 18));
+  const [busy, setBusy] = useState(false);
+  const recalc = async () => {
+    setBusy(true);
+    try {
+      const res = await api("/api/screener/valuation", { method: "POST", body: JSON.stringify({
+        ticker: r.ticker, growth_bull: parseFloat(g.bull), growth_base: parseFloat(g.base), growth_bear: parseFloat(g.bear),
+        discount_pct: parseFloat(disc), terminal_pe: parseFloat(tpe),
+      }) });
+      setV(res.valuation);
+    } catch (e: any) { toast(e.message || "Failed", "error"); } finally { setBusy(false); }
+  };
+  if (!v) return <Text style={styles.disclaimer}>DCF valuation needs positive earnings — not available for {r.ticker}.</Text>;
+  return (
+    <View>
+      <Text style={styles.sectionLabel}>Intrinsic value · scenarios</Text>
+      <ScenarioCards rows={v.scenarios} />
+      <MetricRow label="Probability-weighted value" value={`$${v.weighted_value} (${v.weighted_upside_pct > 0 ? "+" : ""}${v.weighted_upside_pct}%)`} color={v.weighted_upside_pct >= 0 ? colors.success : colors.error} />
+      <MetricRow label="Buy zone (below)" value={`$${v.buy_zone_below}`} color={colors.success} />
+      <MetricRow label="Sell zone (above)" value={`$${v.sell_zone_above}`} color={colors.brandPrimary} />
+      <View style={styles.logicBox}>
+        <Text style={styles.logicTitle}>Edit assumptions</Text>
+        <View style={{ flexDirection: "row", gap: spacing.sm }}>
+          <View style={{ flex: 1 }}><Input testID="dcf-bull" label="Bull growth %" value={g.bull} onChangeText={(t) => setG({ ...g, bull: t })} keyboardType="numeric" /></View>
+          <View style={{ flex: 1 }}><Input testID="dcf-base" label="Base %" value={g.base} onChangeText={(t) => setG({ ...g, base: t })} keyboardType="numeric" /></View>
+          <View style={{ flex: 1 }}><Input testID="dcf-bear" label="Bear %" value={g.bear} onChangeText={(t) => setG({ ...g, bear: t })} keyboardType="numeric" /></View>
+        </View>
+        <View style={{ flexDirection: "row", gap: spacing.sm }}>
+          <View style={{ flex: 1 }}><Input testID="dcf-disc" label="Discount rate %" value={disc} onChangeText={setDisc} keyboardType="numeric" /></View>
+          <View style={{ flex: 1 }}><Input testID="dcf-tpe" label="Terminal P/E" value={tpe} onChangeText={setTpe} keyboardType="numeric" /></View>
+        </View>
+        <Button testID="dcf-recalc" label="Recalculate" onPress={recalc} loading={busy} />
+        <Text style={styles.disclaimer}>{v.method}. EPS (TTM) ${v.assumptions.eps_ttm}. Weights 25/50/25.</Text>
+      </View>
+    </View>
+  );
+}
+
 function LongForm({ r }: { r: any }) {
   return (
     <View>
@@ -306,11 +482,9 @@ function LongForm({ r }: { r: any }) {
         <Badge text={r.verdict || "HOLD"} kind={r.verdict === "BUY" ? "success" : r.verdict === "SELL" ? "error" : "warn"} />
         {r.confidence ? <Badge text={`${r.confidence} conf.`} kind="info" /> : null}
       </View>
-      <Text style={styles.sectionLabel}>Valuation</Text>
-      <MetricRow label="Intrinsic (range mid)" value={`$${r.intrinsic_value}`} />
-      <MetricRow label="Price target" value={`$${r.price_target}`} color={colors.success} />
-      <MetricRow label="Buy point" value={`$${r.buy_point}`} color={colors.success} />
-      <MetricRow label="Sell point" value={`$${r.sell_point}`} color={colors.brandPrimary} />
+      <ValuationEditor r={r} />
+      <Text style={styles.sectionLabel}>Fundamentals</Text>
+      <MetricRow label="Analyst target (avg)" value={r.price_target ? `$${r.price_target}` : "—"} color={colors.success} />
       {r.pe_ratio != null ? <MetricRow label="P/E (TTM)" value={Number(r.pe_ratio).toFixed(2)} /> : null}
       {r.eps_ttm != null ? <MetricRow label="EPS (TTM)" value={`$${Number(r.eps_ttm).toFixed(2)}`} /> : null}
       {r.roe != null ? <MetricRow label="ROE" value={`${Number(r.roe).toFixed(1)}%`} /> : null}
@@ -369,6 +543,10 @@ const styles = StyleSheet.create({
   heroRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
   heroBox: { flex: 1, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, alignItems: "center" },
   heroLabel: { fontSize: 10, color: colors.muted, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },
+  heroValSm: { fontSize: 16, fontWeight: "800", marginTop: 4, color: colors.onSurface, fontVariant: ["tabular-nums"] },
+  logicBox: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, marginTop: spacing.md },
+  logicTitle: { fontSize: 12, fontWeight: "800", color: colors.onSurface, marginBottom: 6 },
+  logicText: { fontSize: 12, color: colors.onSurfaceSecondary, lineHeight: 18 },
   heroVal: { fontSize: 20, fontWeight: "800", marginTop: 4, fontVariant: ["tabular-nums"], letterSpacing: -0.5 },
 
   greekGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginVertical: spacing.sm },
@@ -393,6 +571,7 @@ const styles = StyleSheet.create({
 
   legRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6 },
   legText: { color: colors.onSurface, fontWeight: "600", fontSize: 13 },
+  altRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.divider },
   legTheo: { color: colors.muted, fontSize: 12, fontVariant: ["tabular-nums"] },
 
   scenarioRow: { marginVertical: spacing.sm },
