@@ -9,6 +9,9 @@ export type User = {
   plan?: string | null;
   questionnaire_complete?: boolean;
   consent_signed?: boolean;
+  questionnaire?: Record<string, any>;
+  auth_method?: "email" | "google";
+  created_at?: string;
 };
 
 type AuthCtx = {

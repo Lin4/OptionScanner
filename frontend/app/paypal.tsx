@@ -47,7 +47,7 @@ export default function PaypalCheckout() {
         await refresh();
         setStatus("done");
         toast(`Upgraded to ${r.plan}`, "success");
-        setTimeout(() => router.replace("/(tabs)/profile"), 1200);
+        setTimeout(() => router.replace("/profile"), 1200);
       } else {
         setError(`PayPal status: ${r.status}`);
         setStatus("error");

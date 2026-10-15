@@ -394,6 +394,8 @@ async def oauth_session(req: SessionReq):
 @api_router.get("/auth/me")
 async def me(authorization: Optional[str] = Header(default=None)):
     user = await get_user_from_token(authorization)
+    raw = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password": 1})
+    user["auth_method"] = "email" if (raw or {}).get("password") else "google"
     return {"user": user}
 
 @api_router.post("/auth/logout")

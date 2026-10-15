@@ -124,6 +124,8 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     if (!user && !inAuth) {
       router.replace("/(auth)/login");
     } else if (user && inAuth) {
+      const onboarded = user.plan && user.questionnaire_complete && user.consent_signed;
+      if (onboarded && segments[1] === "questionnaire") return; // editing answers from Profile
       if (!user.plan) router.replace("/(auth)/plan");
       else if (!user.questionnaire_complete) router.replace("/(auth)/questionnaire");
       else if (!user.consent_signed) router.replace("/(auth)/consent");

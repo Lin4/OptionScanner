@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -9,9 +9,22 @@ import { api } from "@/src/api";
 import { Button } from "@/src/Button";
 import { ToastHost, toast } from "@/src/Toast";
 import { colors, spacing, radius } from "@/src/theme";
+import { MetricRow } from "@/src/parts";
+import { LoadingSkeleton } from "@/src/charts";
 
 const PLANS = ["free", "simple", "advance", "expert"];
 const PAID_PLANS = ["simple", "advance", "expert"];
+const PRICE: Record<string, string> = { free: "Free", simple: "$9/mo", advance: "$29/mo", expert: "$79/mo" };
+const FEATURES: Record<string, string[]> = {
+  free: ["Delayed market data", "Limited screens per day", "Education content"],
+  simple: ["Stock screener", "Covered calls", "Cash-secured puts"],
+  advance: ["Full strategy library", "Custom periods", "Collateral & margin views", "Alerts"],
+  expert: ["Backtesting", "Portfolio analytics", "Real-time data", "Unlimited AI"],
+};
+const Q_FIELDS: [string, string][] = [
+  ["experience", "Experience"], ["risk_tolerance", "Risk tolerance"], ["capital", "Capital"],
+  ["account_type", "Account type"], ["options_level", "Options level"],
+];
 
 export default function Profile() {
   const insets = useSafeAreaInsets();
@@ -19,6 +32,10 @@ export default function Profile() {
   const { user, refresh, signOut } = useAuth();
   const [loading, setLoading] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
+  const q = (user?.questionnaire || {}) as Record<string, any>;
+  const memberSince = user?.created_at ? new Date(user.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }) : "";
+
+  useEffect(() => { refresh(); }, [refresh]);
 
   const choosePlan = async (p: string) => {
     if (PAID_PLANS.includes(p) && user?.plan !== p) {
@@ -44,24 +61,45 @@ export default function Profile() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
-        <Pressable testID="profile-back" onPress={() => router.back()} style={styles.back}>
+        <Pressable testID="profile-back" onPress={() => (router.canGoBack() ? router.back() : router.replace("/(tabs)"))} style={styles.back}>
           <Icon name="arrow-left" size={20} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.title}>Profile</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <View style={styles.userCard}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{(user?.name || user?.email || "?").slice(0, 1).toUpperCase()}</Text>
+      <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 60 }]}>
+        {!user ? <LoadingSkeleton lines={6} /> : (
+        <>
+        <Text style={styles.section}>Account</Text>
+        <View testID="account-card" style={styles.card}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md, marginBottom: spacing.sm }}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{(user?.name || user?.email || "?").slice(0, 1).toUpperCase()}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text testID="profile-name" style={styles.name}>{user?.name}</Text>
+              <Text testID="profile-email" style={styles.email}>{user?.email}</Text>
+            </View>
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.name}>{user?.name}</Text>
-            <Text style={styles.email}>{user?.email}</Text>
-          </View>
+          <MetricRow label="Sign-in method" value={user?.auth_method === "google" ? "Google" : "Email & password"} mono={false} />
+          {memberSince ? <MetricRow label="Member since" value={memberSince} mono={false} /> : null}
         </View>
 
-        <Text style={styles.section}>Current plan</Text>
+        <Text style={styles.section}>Plan</Text>
+        <View testID="plan-card" style={[styles.card, styles.planCard]}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text testID="plan-current-name" style={styles.planName}>{(user?.plan || "free").toUpperCase()}</Text>
+            <Text style={styles.planPrice}>{PRICE[user?.plan || "free"]}</Text>
+          </View>
+          <Text style={styles.included}>What&apos;s included</Text>
+          {(FEATURES[user?.plan || "free"] || []).map((f) => (
+            <View key={f} style={styles.featRow}>
+              <Icon name="check" size={14} color={colors.brandPrimary} />
+              <Text style={styles.featText}>{f}</Text>
+            </View>
+          ))}
+        </View>
+        <Text style={[styles.section, { marginTop: spacing.lg }]}>Change plan</Text>
         <View style={styles.planRow}>
           {PLANS.map((p) => {
             const active = user?.plan === p;
@@ -75,6 +113,18 @@ export default function Profile() {
           })}
         </View>
         <Text style={styles.hint}>Paid plans checkout via PayPal (sandbox).</Text>
+
+        <Text style={styles.section}>Trading profile</Text>
+        <View testID="trading-profile-card" style={styles.card}>
+          {Q_FIELDS.map(([k, label]) => (
+            <MetricRow key={k} label={label} value={q[k] || "—"} mono={false} />
+          ))}
+          <View style={{ marginTop: spacing.sm }}>
+            <Button testID="edit-answers" label="Edit answers" variant="ghost" onPress={() => router.push("/(auth)/questionnaire" as any)} />
+          </View>
+        </View>
+        </>
+        )}
 
         <Text style={styles.section}>Notifications</Text>
         <Pressable testID="push-test-btn" onPress={testPush} disabled={pushBusy} style={styles.pushRow}>
@@ -115,7 +165,13 @@ function Row({ icon, label, done }: { icon: string; label: string; done: boolean
 
 const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider },
-  back: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
+  planCard: { borderColor: colors.brandPrimary, backgroundColor: colors.brandSecondary },
+  planName: { fontSize: 20, fontWeight: "800", color: colors.onBrandSecondary, letterSpacing: -0.3 },
+  planPrice: { fontSize: 15, fontWeight: "800", color: colors.onBrandSecondary, fontVariant: ["tabular-nums"] },
+  included: { fontSize: 11, fontWeight: "700", color: colors.onBrandSecondary, textTransform: "uppercase", letterSpacing: 1, marginTop: spacing.md, marginBottom: 4 },
+  featRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 3 },
+  featText: { fontSize: 13, color: colors.onSurface, fontWeight: "600" },
+  back: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
   title: { fontSize: 20, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
 
   scroll: { padding: spacing.lg, paddingBottom: 60 },

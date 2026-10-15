@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 7 verified the Profile bug fix (duplicate /profile route) + enhanced Profile features. Backend: 7/7 pytest cases pass against the public preview URL covering /api/auth/me (auth_method='email', created_at present, plan + questionnaire), /api/user/plan (free immediate switch, invalid plan rejected, advance restore), /api/paypal/create-order (returns order_id + approve_url), and /api/user/questionnaire roundtrip (answers wrapper, questionnaire_complete=true). Frontend (390x844 mobile viewport, logged in as trader@optiscreen.app): tapping go-profile on Discover opens Profile with NO red error screen; account-card, plan-card, trading-profile-card, profile-back, plan-current-name all render; Account card shows name 'Jane Trader', email trader@optiscreen.app, Sign-in method 'Email & password', 'Member since October 11, 2026'; Plan card shows ADVANCE / $29/mo with 'What's included' features; profile-back navigates back to Discover; tapping profile-plan-free switches plan immediately (plan-current-name becomes FREE); tapping profile-plan-advance navigates to /paypal?plan=advance (paypal-back visible, 'Upgrade to ADVANCE' header); edit-answers opens questionnaire prefilled (Intermediate, moderate preselected) with quest-submit label 'Save answers'; saving returns to Profile (account-card renders) with no onboarding redirect loop; /stocks and /options routes return 'Unmatched Route' as expected; all 5 tabs (Discover, Analyze, Portfolio, Alerts, Learn) are present; 0 route/redirect console errors. Test user plan restored to 'advance' via /api/user/plan post-test.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Profile account-card", "issues": ["Avatar initial renders twice as 'JJane Trader' in text extraction — likely overlapping avatar letter 'J' with the name text node 'Jane Trader'. Visually fine in screenshot (avatar on left, name on right), but worth confirming selector hygiene if screen-reader output is affected."]},
+      {"screen": "Profile trading-profile-card", "issues": ["Capital, Account type, Options level show '—' because questionnaire answers don't contain these keys (schema stores 'max_loss', 'experience', 'risk_tolerance', 'horizon', 'objective' etc.). Non-blocking but the Trading profile labels advertise fields that are never populated — consider either collecting them in the questionnaire or renaming labels to match the stored keys."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_profile_iteration7.py",
+    "/app/test_reports/pytest/iteration7_results.xml"
+  ],
+  "action_items": [
+    "Optional: align Trading profile labels (capital/account_type/options_level) with the keys actually saved by the questionnaire, OR add those questions to the questionnaire so the Profile card can display real values instead of em-dashes.",
+    "Optional: tighten Profile avatar/name layout so the initial letter and the user's name don't concatenate in accessibility/text extraction (visually fine today)."
+  ],
+  "critical_code_review_comments": [
+    "profile.tsx handles paid vs free plan switching cleanly; refresh() is called after /api/user/plan.",
+    "AuthGate correctly whitelists (auth)/questionnaire for onboarded users (editing from Profile) — no redirect loop observed.",
+    "/api/auth/me enriches the response with auth_method computed from presence of password hash — correct; also preserves created_at from the users doc."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_profile_iteration7.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None. Used existing test user trader@optiscreen.app. Plan was flipped to 'free' then 'advance' during the UI run; restored to 'advance' at the end via POST /api/user/plan.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase A screener (iteration_6) still passing by inference; new Profile + /api/auth/me features in iteration_7 fully validated. Deprecated-package scan: none of expo-av/expo-barcode-scanner/expo-background-fetch found in /app/frontend. React-native-webview is used only in paypal.tsx (expected). AuthGate pattern + session_token login flow unchanged. The duplicate /profile route bug is fixed — app/(tabs)/profile.tsx, stocks.tsx, options.tsx are gone and no Tabs.Screen entries reference them.",
+  "rca_of_issue": "Root cause of the original red-screen bug: two files registered the same /profile Expo-Router route — app/profile.tsx (real screen) and app/(tabs)/profile.tsx (a Redirect placeholder). Expo-Router matched the tab-group variant first, which rendered the Redirect component on top of the real screen and crashed as a loop. Fix shipped by main agent: deleted app/(tabs)/profile.tsx (plus the sibling stocks.tsx and options.tsx placeholders) so only app/profile.tsx remains at that path. Verified in this iteration — tapping go-profile from Discover opens Profile cleanly with no console route/redirect errors."
+}

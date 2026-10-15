@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 
 import { useAuth } from "@/src/auth";
 import { api } from "@/src/api";
@@ -42,8 +43,10 @@ const SINGLES: Single[] = [
 
 export default function Questionnaire() {
   const insets = useSafeAreaInsets();
-  const { refresh } = useAuth();
-  const [answers, setAnswers] = useState<Record<string, any>>({ objectives: [], preferred_sectors: [], excluded: [] });
+  const { refresh, user } = useAuth();
+  const router = useRouter();
+  const editing = !!(user?.questionnaire_complete && user?.consent_signed);
+  const [answers, setAnswers] = useState<Record<string, any>>({ objectives: [], preferred_sectors: [], excluded: [], ...(user?.questionnaire || {}) });
   const [loading, setLoading] = useState(false);
 
   const setA = (id: string, v: string) => setAnswers((s) => ({ ...s, [id]: v }));
@@ -62,6 +65,9 @@ export default function Questionnaire() {
     try {
       await api("/api/user/questionnaire", { method: "POST", body: JSON.stringify({ answers }) });
       await refresh();
+      if (editing) {
+        if (router.canGoBack()) router.back(); else router.replace("/profile");
+      }
     } catch (e: any) { toast(e.message || "Failed", "error"); }
     finally { setLoading(false); }
   };
@@ -70,7 +76,7 @@ export default function Questionnaire() {
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <Text style={styles.step}>Step 2 of 3</Text>
+          <Text style={styles.step}>{editing ? "Edit answers" : "Step 2 of 3"}</Text>
           <Text style={styles.title}>Tell us about you</Text>
           <Text style={styles.subtitle}>Shapes which ideas we rank. ~2 minutes.</Text>
 
@@ -99,7 +105,7 @@ export default function Questionnaire() {
         </ScrollView>
       </KeyboardAvoidingView>
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
-        <Button testID="quest-submit" label="Continue" onPress={onSubmit} loading={loading} />
+        <Button testID="quest-submit" label={editing ? "Save answers" : "Continue"} onPress={onSubmit} loading={loading} />
       </View>
       <ToastHost />
     </View>

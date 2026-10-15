@@ -43,9 +43,6 @@ export default function TabsLayout() {
         name="learn"
         options={{ title: "Learn", tabBarIcon: ({ color, size }) => <Icon name="book-open" size={size} color={color} /> }}
       />
-      <Tabs.Screen name="options" options={{ href: null }} />
-      <Tabs.Screen name="stocks" options={{ href: null }} />
-      <Tabs.Screen name="profile" options={{ href: null }} />
     </Tabs>
   );
 }
