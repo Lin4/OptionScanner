@@ -8,12 +8,12 @@ import { api } from "@/src/api";
 import { Button } from "@/src/Button";
 import { ToastHost, toast } from "@/src/Toast";
 import { colors, spacing, radius } from "@/src/theme";
+import { PLAN_CARDS } from "@/src/plans";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const PLANS = [
-  { id: "free", name: "Free", price: "$0", tagline: "Starter kit", features: ["Daily top 3 stocks", "1 ticker lookup/day", "Basic AI"] },
-  { id: "simple", name: "Simple", price: "$9/mo", tagline: "For hobby traders", features: ["Top 10 stocks", "Unlimited lookups", "Day + Swing analysis"] },
-  { id: "advance", name: "Advance", price: "$29/mo", tagline: "Power screening", features: ["All screeners", "Options strategies w/ Greeks", "Long-term fundamentals"] },
-  { id: "expert", name: "Expert", price: "$79/mo", tagline: "Pro trading desk", features: ["Priority AI model", "Custom periods", "Full options strategies", "API access"] },
+  { id: "free", name: "7-day free trial", price: "$0", tagline: "Starts today", features: ["Everything in Simple", "5 scans a day", "No card needed"] },
+  ...PLAN_CARDS.map((p) => ({ id: p.id, name: p.name, price: `$${p.price}/mo`, tagline: "Monthly · auto-renews", features: p.features })),
 ];
 
 export default function PlanScreen() {
@@ -25,7 +25,9 @@ export default function PlanScreen() {
   const onContinue = async () => {
     setLoading(true);
     try {
-      await api("/api/user/plan", { method: "POST", body: JSON.stringify({ plan: selected }) });
+      // Everyone starts on the 7-day trial; paid plans are purchased after onboarding
+      await api("/api/user/plan", { method: "POST", body: JSON.stringify({ plan: "free" }) });
+      if (selected !== "free") await AsyncStorage.setItem("pendingUpgrade", selected);
       await refresh();
     } catch (e: any) { toast(e.message || "Failed to save plan", "error"); }
     finally { setLoading(false); }
@@ -36,7 +38,7 @@ export default function PlanScreen() {
       <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={styles.step}>Step 1 of 3</Text>
         <Text style={styles.title}>Pick your plan</Text>
-        <Text style={styles.subtitle}>You can change this anytime.</Text>
+        <Text style={styles.subtitle}>Every account starts with a 7-day free trial. Paid plans are billed monthly after setup.</Text>
 
         <View style={{ marginTop: spacing.xl, gap: spacing.md }}>
           {PLANS.map((p) => {
@@ -72,7 +74,7 @@ export default function PlanScreen() {
         </View>
       </ScrollView>
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
-        <Button testID="plan-continue" label="Continue" onPress={onContinue} loading={loading} />
+        <Button testID="plan-continue" label={selected === "free" ? "Start free trial" : "Start trial · upgrade after setup"} onPress={onContinue} loading={loading} />
       </View>
       <ToastHost />
     </View>

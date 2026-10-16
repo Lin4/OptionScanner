@@ -1,0 +1,160 @@
+"""Plans, 7-day trial, feature matrix, usage counting and Stripe subscription checkout."""
+from __future__ import annotations
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, Optional
+
+import stripe
+from fastapi import HTTPException, Header, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+
+TRIAL_DAYS = 7
+PLAN_PRICES = {"simple": 9.0, "advance": 29.0, "expert": 79.0}
+TIER_RANK = {"expired": 0, "trial": 1, "simple": 2, "advance": 3, "expert": 4}
+INF = 100000
+
+FEATURES: Dict[str, Dict[str, Any]] = {
+    "expired": {"scans_per_day": 0, "alerts": 0, "smart_alerts": False, "custom_period": False, "collateral_views": False,
+                "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 0},
+    "trial": {"scans_per_day": 5, "alerts": 3, "smart_alerts": False, "custom_period": False, "collateral_views": False,
+              "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 1},
+    "simple": {"scans_per_day": 10, "alerts": 3, "smart_alerts": False, "custom_period": False, "collateral_views": False,
+               "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 1},
+    "advance": {"scans_per_day": INF, "alerts": 20, "smart_alerts": True, "custom_period": True, "collateral_views": True,
+                "ai_explain": True, "backtest": True, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 3},
+    "expert": {"scans_per_day": INF, "alerts": INF, "smart_alerts": True, "custom_period": True, "collateral_views": True,
+               "ai_explain": True, "backtest": True, "day_lab": True, "voice": True, "daily_push": True, "strategy_tier": 4},
+}
+# strategy_tier: 1 = covered calls + CSPs, 3 = + all spreads/condors/long options, 4 = + naked selling
+
+
+def _aware(d):
+    if isinstance(d, str):
+        d = datetime.fromisoformat(d)
+    if d and d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return d
+
+
+def compute_access(user: Dict[str, Any]) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    created = _aware(user.get("created_at")) or now
+    trial_end = created + timedelta(days=TRIAL_DAYS)
+    plan = user.get("plan")
+    exp = _aware(user.get("plan_expires_at"))
+    paid_active = plan in PLAN_PRICES and (exp is None or exp > now)
+    if paid_active:
+        tier = plan
+    elif now < trial_end:
+        tier = "trial"
+    else:
+        tier = "expired"
+    days_left = max(0, (trial_end - now).days + (1 if (trial_end - now).seconds > 0 else 0)) if tier == "trial" else 0
+    return {
+        "tier": tier, "plan": plan, "source": user.get("plan_source"),
+        "trial_ends_at": trial_end.isoformat(), "trial_days_left": days_left,
+        "renews_at": exp.isoformat() if exp else None, "features": FEATURES[tier], "prices": PLAN_PRICES,
+    }
+
+
+def strategy_tier_for(tier: str) -> int:
+    return FEATURES.get(tier, FEATURES["expired"])["strategy_tier"]
+
+
+class StripeCheckoutReq(BaseModel):
+    plan: str
+    return_url: Optional[str] = None  # web: app page to come back to
+
+
+def register(api_router, *, db, get_user: Callable, logger):
+    stripe.api_key = os.environ.get("STRIPE_API_KEY", "")
+    if "sk_test_emergent" in stripe.api_key:
+        stripe.api_base = "https://integrations.emergentagent.com/stripe"
+
+    async def bump_scan(user_id: str) -> int:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        r = await db.usage.find_one_and_update({"user_id": user_id, "day": day}, {"$inc": {"scans": 1}},
+                                               upsert=True, return_document=True)
+        return int((r or {}).get("scans", 1))
+
+    async def scans_today(user_id: str) -> int:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        r = await db.usage.find_one({"user_id": user_id, "day": day})
+        return int((r or {}).get("scans", 0))
+
+    @api_router.get("/billing/status")
+    async def billing_status(authorization: Optional[str] = Header(default=None)):
+        user = await get_user(authorization)
+        raw = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password": 0})
+        a = compute_access(raw or user)
+        a["scans_today"] = await scans_today(user["user_id"])
+        a["alerts_count"] = await db.alerts.count_documents({"user_id": user["user_id"]})
+        return a
+
+    @api_router.post("/billing/stripe/checkout")
+    async def stripe_checkout(req: StripeCheckoutReq, request: Request, authorization: Optional[str] = Header(default=None)):
+        user = await get_user(authorization)
+        if req.plan not in PLAN_PRICES:
+            raise HTTPException(status_code=400, detail="Invalid plan")
+        base = str(request.base_url).rstrip("/").replace("http://", "https://")
+        fwd = request.headers.get("x-forwarded-host") or request.headers.get("host")
+        if fwd:
+            base = f"https://{fwd}"
+        if req.return_url:
+            success = f"{req.return_url.split('?')[0]}?session_id={{CHECKOUT_SESSION_ID}}"
+            cancel = req.return_url.split("?")[0] + "?cancelled=1"
+        else:
+            success = f"{base}/api/billing/stripe/return?session_id={{CHECKOUT_SESSION_ID}}"
+            cancel = f"{base}/api/billing/stripe/return?cancelled=1"
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price_data": {"currency": "usd", "unit_amount": int(PLAN_PRICES[req.plan] * 100),
+                                        "recurring": {"interval": "month"},
+                                        "product_data": {"name": f"OptiScreen {req.plan.capitalize()}"}}, "quantity": 1}],
+            success_url=success, cancel_url=cancel,
+            customer_email=user.get("email"), client_reference_id=user["user_id"],
+            metadata={"user_id": user["user_id"], "plan": req.plan},
+            subscription_data={"metadata": {"user_id": user["user_id"], "plan": req.plan}},
+        )
+        await db.payment_transactions.insert_one({
+            "tx_id": f"tx_{uuid.uuid4().hex[:12]}", "provider": "stripe", "session_id": session.id,
+            "user_id": user["user_id"], "plan": req.plan, "amount": PLAN_PRICES[req.plan], "currency": "usd",
+            "status": "initiated", "created_at": datetime.now(timezone.utc),
+        })
+        return {"url": session.url, "session_id": session.id}
+
+    @api_router.get("/billing/stripe/status/{session_id}")
+    async def stripe_status(session_id: str, authorization: Optional[str] = Header(default=None)):
+        user = await get_user(authorization)
+        tx = await db.payment_transactions.find_one({"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0})
+        if not tx:
+            raise HTTPException(status_code=404, detail="Unknown checkout session")
+        s = stripe.checkout.Session.retrieve(session_id)
+        paid = s.status == "complete" and s.payment_status in ("paid", "no_payment_required")
+        if paid and tx["status"] != "paid":
+            # Only the first verified completion grants the plan (idempotent)
+            res = await db.payment_transactions.update_one({"session_id": session_id, "status": {"$ne": "paid"}},
+                                                           {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc),
+                                                                     "subscription_id": s.get("subscription")}})
+            if res.modified_count:
+                await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
+                    "plan": tx["plan"], "plan_source": "stripe", "stripe_subscription_id": s.get("subscription"),
+                    "plan_expires_at": datetime.now(timezone.utc) + timedelta(days=31)}})
+        elif s.status == "expired" and tx["status"] == "initiated":
+            await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {"status": "expired"}})
+        return {"status": s.status, "payment_status": s.payment_status, "paid": paid, "plan": tx["plan"]}
+
+    @api_router.get("/billing/stripe/return", response_class=HTMLResponse)
+    async def stripe_return(session_id: Optional[str] = None, cancelled: Optional[str] = None):
+        msg = "Payment cancelled." if cancelled else "Payment received — return to OptiScreen to finish activating your plan."
+        return HTMLResponse(f"<html><body style='font-family:sans-serif;text-align:center;padding:48px'><h2>OptiScreen</h2><p>{msg}</p><p>You can close this window.</p></body></html>")
+
+    @api_router.post("/billing/downgrade")
+    async def billing_downgrade(authorization: Optional[str] = Header(default=None)):
+        user = await get_user(authorization)
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": "free", "plan_source": None, "plan_expires_at": None}})
+        return {"ok": True}
+
+    return {"bump_scan": bump_scan, "scans_today": scans_today}

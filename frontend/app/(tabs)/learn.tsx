@@ -8,6 +8,7 @@ import { api } from "@/src/api";
 import { Badge } from "@/src/parts";
 import { useTTS } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
+import { usePlan } from "@/src/plans";
 
 export default function Learn() {
   const insets = useSafeAreaInsets();
@@ -16,6 +17,7 @@ export default function Learn() {
   const [filter, setFilter] = useState<string>("All");
   const { play, stop, playing } = useTTS();
   const router = useRouter();
+  const { features } = usePlan();
   const [levels, setLevels] = useState<any>(null);
   useFocusEffect(useCallback(() => {
     api("/api/learn/levels").then(setLevels).catch(() => {});
@@ -102,7 +104,7 @@ export default function Learn() {
                       <Text style={styles.when}>{c.when}</Text>
                     </>
                   ) : null}
-                  <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.md }}>
+                  {features.voice ? <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.md }}>
                     <Pressable
                       testID={`learn-speak-${c.id}`}
                       onPress={() => (playing ? stop() : play(`${c.title}. ${c.summary}. ${c.when || ""}`))}
@@ -111,7 +113,7 @@ export default function Learn() {
                       <Icon name={playing ? "pause" : "volume-2"} size={14} color={colors.brandPrimary} />
                       <Text style={styles.audioText}>{playing ? "Pause" : "Listen"}</Text>
                     </Pressable>
-                  </View>
+                  </View> : null}
                 </View>
               )}
             </Pressable>

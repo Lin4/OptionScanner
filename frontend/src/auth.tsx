@@ -12,6 +12,7 @@ export type User = {
   questionnaire?: Record<string, any>;
   auth_method?: "email" | "google";
   created_at?: string;
+  access?: { tier: string; source?: string | null; trial_days_left?: number; trial_ends_at?: string; renews_at?: string | null };
 };
 
 type AuthCtx = {
@@ -52,12 +53,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const r = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
     await saveToken(r.session_token);
     setUser(r.user);
+    await refresh(); // pull full profile incl. membership access
   };
 
   const signUpEmail = async (email: string, password: string, name?: string) => {
     const r = await api("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, name }) });
     await saveToken(r.session_token);
     setUser(r.user);
+    await refresh();
   };
 
   const exchangeSessionId = async (session_id: string) => {
@@ -66,6 +69,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const r = await api("/api/auth/session", { method: "POST", body: JSON.stringify({ session_id }) });
     await saveToken(r.session_token);
     setUser(r.user);
+    await refresh();
   };
 
   const signOut = async () => {

@@ -1,7 +1,7 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
-import { useEffect } from "react";
-import { LogBox, Platform, View, ActivityIndicator } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { LogBox, Platform, View, ActivityIndicator, Text } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -15,8 +15,16 @@ import { queryClient } from "@/src/query-client";
 import { AuthProvider, useAuth } from "@/src/auth";
 import { colors } from "@/src/theme";
 import { registerForPush } from "@/src/push";
+import Purchases from "react-native-purchases";
+import { initializeRevenueCat, SubscriptionProvider, rcEnabled } from "@/src/revenuecat";
 
 LogBox.ignoreAllLogs(true);
+
+try {
+  initializeRevenueCat();
+} catch (err) {
+  console.warn("RevenueCat unavailable:", err);
+}
 WebBrowser.maybeCompleteAuthSession();
 
 // Push: module-scope setup (web-guarded)
@@ -118,6 +126,33 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     if (user?.user_id) registerForPush(user.user_id);
   }, [user?.user_id]);
 
+  // RevenueCat identity: bind to our stable user id on every auth path
+  const rcIdentityRef = useRef<string | null>(null);
+  const queryClient = useQueryClient();
+  const [purchaseIdentityError, setPurchaseIdentityError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!rcEnabled) return;
+    (async () => {
+      try {
+        if (user?.user_id && rcIdentityRef.current !== user.user_id) {
+          const { customerInfo } = await Purchases.logIn(user.user_id);
+          console.log("[RevenueCat] identity bound:", await Purchases.getAppUserID());
+          queryClient.setQueryData(["revenuecat", "customer-info"], customerInfo);
+          queryClient.invalidateQueries({ queryKey: ["revenuecat"] });
+          rcIdentityRef.current = user.user_id;
+          setPurchaseIdentityError(null);
+        } else if (!user?.user_id && rcIdentityRef.current) {
+          await Purchases.logOut();
+          queryClient.invalidateQueries({ queryKey: ["revenuecat"] });
+          rcIdentityRef.current = null;
+        }
+      } catch (e) {
+        console.warn("[RevenueCat] logIn failed:", e);
+        setPurchaseIdentityError(String(e));
+      }
+    })();
+  }, [user?.user_id]);
+
   useEffect(() => {
     if (loading) return;
     const inAuth = segments[0] === "(auth)";
@@ -144,7 +179,16 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       </View>
     );
   }
-  return <>{children}</>;
+  return (
+    <>
+      {purchaseIdentityError ? (
+        <View testID="rc-identity-error" style={{ backgroundColor: colors.error, padding: 8 }}>
+          <Text style={{ color: colors.onError, fontSize: 12 }}>App Store account link failed: {purchaseIdentityError}</Text>
+        </View>
+      ) : null}
+      {children}
+    </>
+  );
 }
 
 export default function RootLayout() {
@@ -154,11 +198,13 @@ export default function RootLayout() {
         <SafeAreaProvider>
           <QueryClientProvider client={queryClient}>
             <KeyboardProvider>
-              <AuthProvider>
-                <AuthGate>
-                  <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }} />
-                </AuthGate>
-              </AuthProvider>
+              <SubscriptionProvider>
+                <AuthProvider>
+                  <AuthGate>
+                    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }} />
+                  </AuthGate>
+                </AuthProvider>
+              </SubscriptionProvider>
             </KeyboardProvider>
           </QueryClientProvider>
         </SafeAreaProvider>

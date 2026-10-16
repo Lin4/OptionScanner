@@ -9,6 +9,7 @@ import { Badge } from "@/src/parts";
 import { LoadingSkeleton } from "@/src/charts";
 import { Stat } from "@/src/screen";
 import { colors, spacing, radius } from "@/src/theme";
+import { usePlan, LockedFeature } from "@/src/plans";
 
 type Tab = "live" | "backtest";
 
@@ -17,6 +18,7 @@ export default function TrackRecord() {
   const router = useRouter();
   const [data, setData] = useState<any>(null);
   const [tab, setTab] = useState<Tab>("live");
+  const plan = usePlan();
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
@@ -69,6 +71,8 @@ export default function TrackRecord() {
               </View>
             ))}
           </View>
+        ) : !plan.features.backtest ? (
+          <LockedFeature need="advance" label="Backtest tab" testID="locked-backtest" />
         ) : bt?.status !== "ready" ? (
           <Text testID="track-backtest-pending" style={styles.empty}>The backtest is being calculated from past daily prices. Pull down to refresh in a minute.</Text>
         ) : (

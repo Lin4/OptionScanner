@@ -12,13 +12,18 @@ import { MetricRow, Badge } from "@/src/parts";
 import { PayoffChart, FreshnessPill, LoadingSkeleton } from "@/src/charts";
 import { useTTS, useSTT } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
+import { PlanGate, usePlan } from "@/src/plans";
 import { ACCOUNTS, Chips, Label, OptionInsights, accountLabel } from "@/src/screen";
 
 const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Sell Put", "Sell Call", "Short Strangle"];
 
 type Lab = "day" | "swing" | "long" | "options";
 
-export default function Analyze() {
+export default function AnalyzeGated() {
+  return <PlanGate><Analyze /></PlanGate>;
+}
+
+function Analyze() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [ticker, setTicker] = useState("");
@@ -32,6 +37,7 @@ export default function Analyze() {
   const [acctSize, setAcctSize] = useState("25000");
   const [riskPct, setRiskPct] = useState("1");
   const [minRR, setMinRR] = useState("2");
+  const plan = usePlan();
   const params = useLocalSearchParams<{ ticker?: string; strategy?: string; range?: string }>();
 
   useEffect(() => {
@@ -58,11 +64,11 @@ export default function Analyze() {
     try {
       if (which === "options") {
         const r = await api("/api/screener/ticker-options", { method: "POST", body: JSON.stringify({
-          ticker: tk, expiration_range: o.rng || range, strategy: o.strat || strategy, account_type: acct,
+          ticker: tk, expiration_range: o.rng || range, strategy: plan.strategyAllowed(o.strat || strategy) ? (o.strat || strategy) : "auto", account_type: acct, tier: plan.tier,
           account_size: parseFloat(acctSize) || undefined,
         }) });
         setData(r.result);
-        explainOne(r.result);
+        if (plan.features.ai_explain) explainOne(r.result);
       } else {
         const r = await api("/api/screener/stock-analysis", { method: "POST", body: JSON.stringify({
           ticker: tk, purpose: which, account_size: parseFloat(acctSize) || undefined,
@@ -107,7 +113,7 @@ export default function Analyze() {
           {labs.map((l) => {
             const active = lab === l.id;
             return (
-              <Pressable key={l.id} testID={`lab-${l.id}`} onPress={() => { setLab(l.id); setData(null); }} style={[styles.modeChip, active && styles.modeChipActive]}>
+              <Pressable key={l.id} testID={`lab-${l.id}`} onPress={() => { if (l.id === "day" && !plan.features.day_lab) { router.push("/upgrade" as any); return; } setLab(l.id); setData(null); }} style={[styles.modeChip, active && styles.modeChipActive]}>
                 <Text style={[styles.modeChipText, active && styles.modeChipTextActive]}>{l.label}</Text>
               </Pressable>
             );
@@ -144,8 +150,9 @@ export default function Analyze() {
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm, paddingBottom: spacing.md }}>
                 {STRATS.map((o) => {
                   const active = strategy === o;
+                  const ok = plan.strategyAllowed(o);
                   return (
-                    <Pressable key={o} testID={`strat-${o}`} onPress={() => setStrategy(o)} style={[styles.chip, active && styles.chipActive]}>
+                    <Pressable key={o} testID={`strat-${o}`} onPress={() => (ok ? setStrategy(o) : router.push("/upgrade" as any))} style={[styles.chip, active && styles.chipActive, !ok && { opacity: 0.45 }]}>
                       <Text style={[styles.chipText, active && styles.chipTextActive]}>{o === "auto" ? "Auto (best fit)" : o}</Text>
                     </Pressable>
                   );
@@ -205,12 +212,13 @@ function ProvenanceBar({ src }: { src: any }) {
 
 function SpeakAi({ text }: { text: string }) {
   const { play, stop, loading, playing } = useTTS();
+  const { features } = usePlan();
   return (
     <View style={styles.aiRow}>
       <Text style={styles.aiText}>{text}</Text>
-      <Pressable testID="speak-btn" onPress={() => (playing ? stop() : play(text))} style={styles.speakBtn}>
+      {features.voice ? <Pressable testID="speak-btn" onPress={() => (playing ? stop() : play(text))} style={styles.speakBtn}>
         <Icon name={loading ? "loader" : playing ? "pause" : "volume-2"} size={14} color={colors.brandPrimary} />
-      </Pressable>
+      </Pressable> : null}
     </View>
   );
 }
@@ -225,6 +233,7 @@ function MicButton({ onText }: { onText: (t: string) => void }) {
 }
 
 function OptionsLab({ r }: { r: any }) {
+  const plan = usePlan();
   const [expanded, setExpanded] = useState<"basic" | "greeks" | "scenarios">("basic");
   return (
     <View>
@@ -329,7 +338,7 @@ function OptionsLab({ r }: { r: any }) {
         </View>
       )}
 
-      <OptionInsights r={r} />
+      <OptionInsights r={r} collateralLocked={!plan.features.collateral_views} />
       {r.risk_note ? <Text style={styles.rationale}>AI risk note: {r.risk_note}</Text> : null}
       {(r.alternatives || []).length ? (
         <>

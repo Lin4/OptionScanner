@@ -11,8 +11,13 @@ import { ToastHost, toast } from "@/src/Toast";
 import { Sparkline } from "@/src/parts";
 import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
+import { PlanGate } from "@/src/plans";
 
-export default function Portfolio() {
+export default function PortfolioGated() {
+  return <PlanGate><Portfolio /></PlanGate>;
+}
+
+function Portfolio() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [items, setItems] = useState<any[]>([]);

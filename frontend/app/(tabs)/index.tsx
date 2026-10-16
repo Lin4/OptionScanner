@@ -12,6 +12,8 @@ import { ToastHost, toast } from "@/src/Toast";
 import { Sparkline, Badge } from "@/src/parts";
 import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
+import { PlanGate, usePlan, LockedFeature } from "@/src/plans";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Filters, ProfileId, PROFILE_INFO, defaultFilters, filtersPayload, FilterPanel, ProfilePicker, Label, accountLabel } from "@/src/screen";
 
 type Mode = "find" | "best";
@@ -20,7 +22,11 @@ const SECTORS = ["Tech", "Consumer Discretionary", "Financials", "Energy", "Heal
 const PERIODS = ["day", "week", "month", "custom"];
 const REJECT_LABEL: Record<string, string> = { max_loss: "max loss", pop: "probability", roc: "return", liquidity: "liquidity", iv_rank: "IV rank", earnings: "earnings", undefined_risk: "undefined risk", account_type: "account type", options_level: "options level", capital: "capital needed" };
 
-export default function Discover() {
+export default function DiscoverGated() {
+  return <PlanGate><Discover /></PlanGate>;
+}
+
+function Discover() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
@@ -40,6 +46,10 @@ export default function Discover() {
   const [aiLoading, setAiLoading] = useState(false);
   const [locked, setLocked] = useState<Record<string, boolean>>({});
   const [levelLabel, setLevelLabel] = useState("");
+  const plan = usePlan();
+  const [scansToday, setScansToday] = useState(0);
+  const scanLimit = plan.features.scans_per_day;
+  const tierLocked: Record<string, boolean> = { low_high: !plan.atLeast("advance"), high_high: !plan.atLeast("expert") };
 
   useEffect(() => {
     api("/api/screener/profiles").then((r) => {
@@ -49,6 +59,8 @@ export default function Discover() {
       setLocked(lk);
       setLevelLabel(r?.options_level_label || "");
     }).catch(() => {});
+    AsyncStorage.getItem("pendingUpgrade").then((v) => { if (v) { AsyncStorage.removeItem("pendingUpgrade"); router.push("/upgrade" as any); } }).catch(() => {});
+    api("/api/billing/status").then((b) => setScansToday(b.scans_today || 0)).catch(() => {});
   }, []);
 
   const toggleSector = (s: string) => setSectors((c) => c.includes(s) ? c.filter((x) => x !== s) : [...c, s]);
@@ -70,14 +82,16 @@ export default function Discover() {
   };
 
   const run = async () => {
+    if (scansToday >= scanLimit) { toast(`Daily limit reached (${scanLimit} scans). Upgrade for more.`, "error"); router.push("/upgrade" as any); return; }
     setLoading(true); setResults([]); setSummary(""); setAiMap({}); setStats(null);
     try {
-      const base = { ...filtersPayload(f), limit: parseInt(limit) || 5 };
+      const base = { ...filtersPayload(f), limit: parseInt(limit) || 5, tier: plan.tier };
       const r = mode === "find"
         ? await api("/api/screener/find-stocks", { method: "POST", body: JSON.stringify({ ...base, expiration: exp, sectors }) })
         : await api("/api/screener/best-options", { method: "POST", body: JSON.stringify({ ...base, period, custom_days: period === "custom" ? parseInt(customDays) : null }) });
       setResults(r.results || []); setStats(r.stats);
-      explain(r.results || [], `${PROFILE_INFO[f.profile].title}, ${mode === "find" ? exp : period} horizon, ${accountLabel(f.account_type)} account`);
+      if (r.scans_today != null) setScansToday(r.scans_today);
+      if (plan.features.ai_explain) explain(r.results || [], `${PROFILE_INFO[f.profile].title}, ${mode === "find" ? exp : period} horizon, ${accountLabel(f.account_type)} account`);
     } catch (e: any) { toast(e.message || "Failed", "error"); }
     finally { setLoading(false); }
   };
@@ -120,7 +134,9 @@ export default function Discover() {
               <Text style={styles.levelText}>Your options level: {levelLabel}</Text>
             </View>
           ) : null}
-          <ProfilePicker value={f.profile} onChange={pickProfile} locked={locked} />
+          <ProfilePicker value={f.profile} onChange={pickProfile} locked={{ low_low: !!locked.low_low, low_high: !!locked.low_high || tierLocked.low_high, high_high: !!locked.high_high || tierLocked.high_high }} />
+          {tierLocked.low_high ? <LockedFeature need="advance" label="Spreads & iron condor profiles" testID="locked-profiles" /> : null}
+          <Text testID="scan-usage" style={styles.stats}>{scanLimit >= 100000 ? "Unlimited scans" : `${scansToday}/${scanLimit} scans used today`} · {plan.tier === "trial" ? `Free trial · ${plan.trialDaysLeft} day${plan.trialDaysLeft === 1 ? "" : "s"} left` : `${plan.tier} plan`}</Text>
           {mode === "find" ? (
             <>
               <ChipRow label="Expiration" value={exp} onChange={setExp} options={EXPIRATION} testKey="exp" />
@@ -138,7 +154,8 @@ export default function Discover() {
             </>
           ) : (
             <>
-              <ChipRow label="Period" value={period} onChange={setPeriod} options={PERIODS} testKey="period" />
+              <ChipRow label="Period" value={period} onChange={setPeriod} options={plan.features.custom_period ? PERIODS : PERIODS.filter((x) => x !== "custom")} testKey="period" />
+              {!plan.features.custom_period ? <LockedFeature need="advance" label="Custom periods" testID="locked-custom" /> : null}
               {period === "custom" ? <Input testID="custom-days" label="Custom days" value={customDays} onChangeText={setCustomDays} keyboardType="numeric" /> : null}
             </>
           )}

@@ -6,6 +6,7 @@ import Icon from "@react-native-vector-icons/feather";
 import { Input } from "./Input";
 import { MetricRow, Badge } from "./parts";
 import { colors, spacing, radius } from "./theme";
+import { LockedFeature } from "./plans";
 
 export type ProfileId = "low_low" | "low_high" | "high_high";
 export type Filters = {
@@ -159,7 +160,7 @@ export function FilterPanel({ f, set }: { f: Filters; set: (p: Partial<Filters>)
 const money = (v: number | null | undefined) => (v == null ? "—" : `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
 
 /** Deterministic engine details for one option idea. */
-export function OptionInsights({ r }: { r: any }) {
+export function OptionInsights({ r, collateralLocked = false }: { r: any; collateralLocked?: boolean }) {
   const v = r.volatility || {};
   const l = r.liquidity || {};
   const e = r.events || {};
@@ -183,6 +184,7 @@ export function OptionInsights({ r }: { r: any }) {
       <Text style={s.hint}>{p.note}</Text>
 
       <Text style={s.section}>Collateral by account</Text>
+      {collateralLocked ? <LockedFeature need="advance" label="Collateral & margin views" testID="locked-collateral" /> : (<>
       <View style={s.table}>
         <View style={[s.tr, s.th]}>
           <Text style={[s.td, s.tdHead, { flex: 1.4 }]}>Account</Text>
@@ -210,6 +212,7 @@ export function OptionInsights({ r }: { r: any }) {
         })}
       </View>
       <Text style={s.hint}>*{r.annualized_note}</Text>
+      </>)}
 
       <Text style={s.section}>Volatility</Text>
       <View style={s.grid}>

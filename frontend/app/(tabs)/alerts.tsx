@@ -10,6 +10,7 @@ import { Button } from "@/src/Button";
 import { ToastHost, toast } from "@/src/Toast";
 import { Badge } from "@/src/parts";
 import { colors, spacing, radius } from "@/src/theme";
+import { PlanGate, usePlan } from "@/src/plans";
 
 const KINDS = [
   { id: "price_above", label: "Price above", icon: "trending-up" },
@@ -19,7 +20,11 @@ const KINDS = [
 ];
 const PROFILE_OPTS = [{ id: "low_low", label: "Low risk" }, { id: "low_high", label: "Higher reward" }, { id: "high_high", label: "High risk" }];
 
-export default function Alerts() {
+export default function AlertsGated() {
+  return <PlanGate><Alerts /></PlanGate>;
+}
+
+function Alerts() {
   const insets = useSafeAreaInsets();
   const [items, setItems] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
@@ -31,6 +36,8 @@ export default function Alerts() {
   const [profile, setProfile] = useState("low_low");
   const [checking, setChecking] = useState(false);
   const router = useRouter();
+  const plan = usePlan();
+  const alertLimit = plan.features.alerts;
 
   const load = useCallback(async () => {
     try { const r = await api("/api/alerts"); setItems(r.items || []); } catch {}
@@ -51,6 +58,8 @@ export default function Alerts() {
 
   const add = async () => {
     const smart = kind === "smart_setup";
+    if (smart && !plan.features.smart_alerts) { toast("70%+ smart alerts need the Advance plan", "error"); router.push("/upgrade" as any); return; }
+    if (items.length >= alertLimit) { toast(`Alert limit reached (${alertLimit}). Upgrade for more.`, "error"); return; }
     if (!smart && !ticker.trim()) { toast("Enter a ticker", "error"); return; }
     if ((kind === "price_above" || kind === "price_below") && !threshold.trim()) { toast("Enter a price threshold", "error"); return; }
     setLoading(true);
@@ -79,6 +88,7 @@ export default function Alerts() {
           <View>
             <Text style={styles.title}>Alerts</Text>
             <Text style={styles.sub}>New 70%+ setups, price moves & earnings</Text>
+            <Text testID="alert-usage" style={styles.emptySub}>{alertLimit >= 100000 ? "Unlimited alerts" : `${items.length}/${alertLimit} alerts used`}</Text>
           </View>
           <Pressable testID="add-alert" onPress={() => setOpen(true)} style={styles.addBtn}>
             <Icon name="plus" size={18} color={colors.onBrandPrimary} />

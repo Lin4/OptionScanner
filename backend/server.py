@@ -34,6 +34,7 @@ from market import (
 )
 from market import get_earnings, get_metrics, _cache_get as market_cache_get
 import extras
+import billing
 from engine import (
     STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
@@ -90,6 +91,7 @@ class ScreenFilters(BaseModel):
     max_spread_pct: Optional[float] = Field(default=None, gt=0, le=100)
     min_iv_rank: Optional[float] = Field(default=None, ge=0, le=100)
     exclude_earnings: Optional[bool] = None
+    tier: Optional[str] = None  # effective membership tier (client merges App Store entitlement)
 
 class FindStockReq(ScreenFilters):
     risk: Optional[str] = None  # legacy: high | low
@@ -397,8 +399,9 @@ async def oauth_session(req: SessionReq):
 @api_router.get("/auth/me")
 async def me(authorization: Optional[str] = Header(default=None)):
     user = await get_user_from_token(authorization)
-    raw = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password": 1})
+    raw = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
     user["auth_method"] = "email" if (raw or {}).get("password") else "google"
+    user["access"] = billing.compute_access(raw or user)
     return {"user": user}
 
 @api_router.post("/auth/logout")
@@ -415,7 +418,9 @@ async def set_plan(req: PlanReq, authorization: Optional[str] = Header(default=N
     user = await get_user_from_token(authorization)
     if req.plan not in ("free", "simple", "advance", "expert"):
         raise HTTPException(status_code=400, detail="Invalid plan")
-    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": req.plan}})
+    if req.plan != "free":
+        raise HTTPException(status_code=402, detail="Paid plans require checkout (card, Apple Pay, Google Pay, PayPal or App Store)")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": "free", "plan_source": None, "plan_expires_at": None}})
     return {"ok": True, "plan": req.plan}
 
 @api_router.post("/user/questionnaire")
@@ -440,6 +445,14 @@ async def save_consent(req: ConsentReq, authorization: Optional[str] = Header(de
 
 
 # ========== SCREENER ROUTES ==========
+def _tier_allows(tier: str, strategy: str) -> bool:
+    st = billing.strategy_tier_for(tier)
+    if st >= 4:
+        return True
+    if st >= 3:
+        return not STRATEGY_META[strategy]["naked"]
+    return strategy in ("Cash Secured Put", "Covered Call")
+
 def _resolve_profile(req) -> str:
     if req.profile in PROFILES:
         return req.profile
@@ -469,12 +482,15 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
     account_size = float(req.account_size or d["account_size"])
     bias = req.bias or "any"
     level = d["options_level"]
-    key = json.dumps({"p": profile, "f": filters, "a": account_type, "s": account_size, "b": bias, "d": dte, "lv": level,
+    tier = req.tier if req.tier in billing.TIER_RANK else billing.compute_access(
+        await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0}) or user)["tier"]
+    usage = await BILLING["bump_scan"](user["user_id"])
+    key = json.dumps({"t2": tier, "p": profile, "f": filters, "a": account_type, "s": account_size, "b": bias, "d": dte, "lv": level,
                       "t": [x["ticker"] for x in pool], "l": req.limit}, sort_keys=True)
     hit = cache_get(key, 60)
     if hit:
-        return hit
-    strategies = candidate_strategies(profile, bias, level)
+        return {**hit, "scans_today": usage}
+    strategies = [x for x in candidate_strategies(profile, bias, level) if _tier_allows(tier, x)]
     async with httpx.AsyncClient() as client:
         snaps = await asyncio.gather(*[ticker_snapshot(client, x["ticker"]) for x in pool])
     snaps = [s for s in snaps if s]
@@ -510,10 +526,11 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
         "stats": {"tickers_scanned": len(snaps), "ideas_evaluated": evaluated, "passed": len(results), "rejected_by": rejected},
         "fetched_at": now_utc().isoformat(),
     }
+    out["tier"] = tier
     cache_set(key, out)
     if EXTRAS.get("log_picks") and results:
         asyncio.create_task(EXTRAS["log_picks"](results, profile))
-    return out
+    return {**out, "scans_today": usage}
 
 
 @api_router.get("/screener/profiles")
@@ -1013,7 +1030,7 @@ async def paypal_capture(req: CaptureOrderReq, authorization: Optional[str] = He
     if res.get("status") == "COMPLETED" and res.get("plan"):
         await db.users.update_one(
             {"user_id": user["user_id"]},
-            {"$set": {"plan": res["plan"]}},
+            {"$set": {"plan": res["plan"], "plan_source": "paypal", "plan_expires_at": now_utc() + timedelta(days=30)}},
         )
         await db.payments.insert_one({
             "user_id": user["user_id"],
@@ -1068,6 +1085,8 @@ async def _scan_for_user(user: Dict[str, Any], profile: str) -> Dict[str, Any]:
     req = BestOptionsReq(period="month", profile=profile, limit=5)
     return await run_scan(req, user, 30, UNIVERSE[:])
 
+
+BILLING: Dict[str, Any] = billing.register(api_router, db=db, get_user=get_user_from_token, logger=logger)
 
 EXTRAS: Dict[str, Any] = extras.register(
     api_router, db=db, get_user=get_user_from_token, user_defaults=user_defaults, scan_for_user=_scan_for_user,

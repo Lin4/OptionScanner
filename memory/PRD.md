@@ -74,6 +74,12 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - Level-up lessons: 4 levels × 3 lessons + 3-question quiz (`/api/learn/levels`, `/lesson/[level]` screen), badges in `lesson_progress`; doesn't change options level.
 - Note: `import extras` must stay AFTER load_dotenv in server.py (market.py reads API keys at import).
 
+## Phase D — Membership & payments — DONE (`backend/billing.py`, `frontend/src/plans.tsx`, `src/revenuecat.tsx`, `app/upgrade.tsx`)
+- 7-day free trial from registration (tier "trial", Simple features, 5 scans/day); then "expired" → full paywall (PlanGate) on Discover/Analyze/Portfolio/Alerts; Learn & Profile stay open.
+- Tiers: Simple $9 (10 scans, CC/CSP, 3 alerts), Advance $29 (unlimited scans, spreads/IC, custom periods, collateral views, smart alerts, 20 alerts, AI explain, backtest), Expert $79 (+naked, day lab, voice, daily push, unlimited alerts).
+- Payments: Stripe subscription Checkout (card/Apple Pay/Google Pay, verified via session status polling — Emergent Stripe proxy has no webhooks/subscription API, so plan_expires_at = +31d), PayPal sandbox (30 days), RevenueCat Apple IAP on iPhone (entitlement `pro`, tier from package; see /app/memory/revenuecat.md).
+- Gating is enforced client-side via usePlan() (server tier merged with RevenueCat tier); server counts scans (`usage`) and restricts strategies by `tier`.
+
 ## Backlog (from plan)
 - Phase 2: long-term research page (ownership, dividends history, filings risks, price-target dispersion), paper trading + public track record, IV/setup alerts, nav order (stock screening first), tier data rules.
 - Phase 3: backtesting, position monitoring, broker connection, trade journal, intraday tools, real options data feed.

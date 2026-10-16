@@ -9,18 +9,13 @@ import { api } from "@/src/api";
 import { Button } from "@/src/Button";
 import { ToastHost, toast } from "@/src/Toast";
 import { colors, spacing, radius } from "@/src/theme";
+import { usePlan, tierLabel, PLAN_CARDS } from "@/src/plans";
 import { MetricRow } from "@/src/parts";
 import { LoadingSkeleton } from "@/src/charts";
 
 const PLANS = ["free", "simple", "advance", "expert"];
-const PAID_PLANS = ["simple", "advance", "expert"];
-const PRICE: Record<string, string> = { free: "Free", simple: "$9/mo", advance: "$29/mo", expert: "$79/mo" };
-const FEATURES: Record<string, string[]> = {
-  free: ["Delayed market data", "Limited screens per day", "Education content"],
-  simple: ["Stock screener", "Covered calls", "Cash-secured puts"],
-  advance: ["Full strategy library", "Custom periods", "Collateral & margin views", "Alerts"],
-  expert: ["Backtesting", "Portfolio analytics", "Real-time data", "Unlimited AI"],
-};
+const PRICE: Record<string, string> = { trial: "Free · 7 days", expired: "—", simple: "$9/mo", advance: "$29/mo", expert: "$79/mo" };
+const TRIAL_FEATURES = ["Everything in Simple", "5 scans a day", "7 days from sign-up"];
 const Q_FIELDS: [string, string][] = [
   ["experience", "Experience"], ["risk_tolerance", "Risk tolerance"], ["capital", "Capital"],
   ["account_type", "Account type"], ["options_level", "Options level"],
@@ -30,6 +25,8 @@ export default function Profile() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user, refresh, signOut } = useAuth();
+  const plan = usePlan();
+  const planFeatures = plan.tier === "trial" ? TRIAL_FEATURES : plan.tier === "expired" ? ["Trial ended — pick a plan to continue"] : (PLAN_CARDS.find((c) => c.id === plan.tier)?.features || []);
   const [loading, setLoading] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const q = (user?.questionnaire || {}) as Record<string, any>;
@@ -38,17 +35,15 @@ export default function Profile() {
   useEffect(() => { refresh(); }, [refresh]);
 
   const choosePlan = async (p: string) => {
-    if (PAID_PLANS.includes(p) && user?.plan !== p) {
-      router.push(`/paypal?plan=${p}` as any);
-      return;
-    }
+    if (p !== "free") { router.push("/upgrade" as any); return; }
     setLoading(true);
-    try { await api("/api/user/plan", { method: "POST", body: JSON.stringify({ plan: p }) }); await refresh(); toast(`Switched to ${p}`, "success"); }
+    try { await api("/api/billing/downgrade", { method: "POST" }); await refresh(); toast("Switched to Free (trial rules apply)", "success"); }
     catch (e: any) { toast(e.message || "Failed", "error"); }
     finally { setLoading(false); }
   };
 
   const testPush = async () => {
+    if (!plan.features.daily_push) { toast("Daily-pick push is an Expert feature", "info"); router.push("/upgrade" as any); return; }
     setPushBusy(true);
     try {
       const r = await api("/api/push/daily-pick", { method: "POST" });
@@ -88,11 +83,14 @@ export default function Profile() {
         <Text style={styles.section}>Plan</Text>
         <View testID="plan-card" style={[styles.card, styles.planCard]}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text testID="plan-current-name" style={styles.planName}>{(user?.plan || "free").toUpperCase()}</Text>
-            <Text style={styles.planPrice}>{PRICE[user?.plan || "free"]}</Text>
+            <Text testID="plan-current-name" style={styles.planName}>{tierLabel(plan.tier).toUpperCase()}</Text>
+            <Text style={styles.planPrice}>{PRICE[plan.tier]}</Text>
           </View>
           <Text style={styles.included}>What&apos;s included</Text>
-          {(FEATURES[user?.plan || "free"] || []).map((f) => (
+          {plan.tier === "trial" ? <Text testID="trial-days" style={styles.featText}>{plan.trialDaysLeft} day{plan.trialDaysLeft === 1 ? "" : "s"} left in your free trial</Text> : null}
+          {plan.renewsAt && plan.tier !== "trial" ? <Text style={styles.featText}>Renews {new Date(plan.renewsAt).toLocaleDateString()} via {plan.source}</Text> : null}
+          {plan.source === "app_store" ? <Text style={styles.featText}>Billed by the App Store</Text> : null}
+          {planFeatures.map((f) => (
             <View key={f} style={styles.featRow}>
               <Icon name="check" size={14} color={colors.brandPrimary} />
               <Text style={styles.featText}>{f}</Text>
@@ -102,7 +100,7 @@ export default function Profile() {
         <Text style={[styles.section, { marginTop: spacing.lg }]}>Change plan</Text>
         <View style={styles.planRow}>
           {PLANS.map((p) => {
-            const active = user?.plan === p;
+            const active = plan.tier === p || (p === "free" && (plan.tier === "trial" || plan.tier === "expired"));
             const price = p === "simple" ? "$9" : p === "advance" ? "$29" : p === "expert" ? "$79" : "Free";
             return (
               <Pressable key={p} testID={`profile-plan-${p}`} onPress={() => choosePlan(p)} disabled={loading} style={[styles.planChip, active && styles.planChipActive]}>
@@ -112,7 +110,8 @@ export default function Profile() {
             );
           })}
         </View>
-        <Text style={styles.hint}>Paid plans checkout via PayPal (sandbox).</Text>
+        <Text style={styles.hint}>Pay by card, Apple Pay, Google Pay (Stripe), PayPal, or Apple in-app purchase on iPhone. Monthly, auto-renewing.</Text>
+        <Button testID="profile-upgrade" label="See plans & upgrade" onPress={() => router.push("/upgrade" as any)} />
 
         <Text style={styles.section}>Trading profile</Text>
         <View testID="trading-profile-card" style={styles.card}>
