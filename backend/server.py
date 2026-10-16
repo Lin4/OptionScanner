@@ -34,7 +34,7 @@ from market import (
 )
 from market import get_earnings, get_metrics, _cache_get as market_cache_get
 from engine import (
-    STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS,
+    STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
     trade_plan, price_scenarios, dcf_valuation, default_dcf_inputs,
 )
@@ -219,6 +219,7 @@ def user_defaults(user: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "account_size": float(CAPITAL_MAP.get(q.get("capital"), 25000)),
         "account_type": ACCOUNT_MAP.get(q.get("account_type"), "reg_t"),
+        "options_level": user_options_level(q),
     }
 
 
@@ -250,13 +251,14 @@ async def ticker_snapshot(client: httpx.AsyncClient, ticker: str) -> Optional[Di
 def ideas_for_snapshot(snap: Dict[str, Any], strategies: List[str], dte: int, account_type: str) -> List[Dict]:
     out = []
     for s in strategies:
-        try:
-            idea = build_idea(snap["ticker"], snap["info"], s, snap["price"], snap["vol"], dte, account_type,
-                              snap["earnings_date"], snap["dividend_yield"])
-            idea["sparkline"] = snap["sparkline"]
-            out.append(idea)
-        except Exception as ex:
-            logger.warning(f"idea {snap['ticker']} {s} failed: {ex}")
+        for scale in (CREDIT_VARIANTS if STRATEGY_META[s]["credit"] else (1.0,)):
+            try:
+                idea = build_idea(snap["ticker"], snap["info"], s, snap["price"], snap["vol"], dte, account_type,
+                                  snap["earnings_date"], snap["dividend_yield"], scale)
+                idea["sparkline"] = snap["sparkline"]
+                out.append(idea)
+            except Exception as ex:
+                logger.warning(f"idea {snap['ticker']} {s} failed: {ex}")
     return out
 
 
@@ -461,15 +463,17 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
     d = user_defaults(user)
     profile = _resolve_profile(req)
     filters = _resolve_filters(req, profile)
+    filters["min_pop"] = max(float(filters["min_pop"]), MIN_POP_FLOOR)
     account_type = req.account_type if req.account_type in ACCOUNT_TYPES else d["account_type"]
     account_size = float(req.account_size or d["account_size"])
     bias = req.bias or "any"
-    key = json.dumps({"p": profile, "f": filters, "a": account_type, "s": account_size, "b": bias, "d": dte,
+    level = d["options_level"]
+    key = json.dumps({"p": profile, "f": filters, "a": account_type, "s": account_size, "b": bias, "d": dte, "lv": level,
                       "t": [x["ticker"] for x in pool], "l": req.limit}, sort_keys=True)
     hit = cache_get(key, 60)
     if hit:
         return hit
-    strategies = candidate_strategies(profile, bias)
+    strategies = candidate_strategies(profile, bias, level)
     async with httpx.AsyncClient() as client:
         snaps = await asyncio.gather(*[ticker_snapshot(client, x["ticker"]) for x in pool])
     snaps = [s for s in snaps if s]
@@ -481,7 +485,7 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
             evaluated += len(ideas)
             ok = []
             for i in ideas:
-                fails = passes(i, filters, profile, account_size)
+                fails = passes(i, filters, profile, account_size, level)
                 for r in fails:
                     rejected[r] = rejected.get(r, 0) + 1
                 if not fails:
@@ -500,6 +504,8 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
     out = {
         "results": results, "profile": profile, "profile_label": PROFILES[profile]["label"],
         "filters": filters, "account_type": account_type, "account_size": account_size, "bias": bias,
+        "options_level": level, "options_level_label": LEVEL_NAMES.get(level), "allowed_strategies": strategies,
+        "min_pop_floor": MIN_POP_FLOOR,
         "stats": {"tickers_scanned": len(snaps), "ideas_evaluated": evaluated, "passed": len(results), "rejected_by": rejected},
         "fetched_at": now_utc().isoformat(),
     }
@@ -510,9 +516,13 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
 @api_router.get("/screener/profiles")
 async def screener_profiles(authorization: Optional[str] = Header(default=None)):
     user = await get_user_from_token(authorization)
+    lvl = user_defaults(user)["options_level"]
     return {
-        "profiles": {k: {**v, "filters": default_filters(k), "strategies": candidate_strategies(k, "any")} for k, v in PROFILES.items()},
+        "profiles": {k: {**v, "filters": default_filters(k), "strategies": candidate_strategies(k, "any", lvl),
+                         "locked": not candidate_strategies(k, "any", lvl)} for k, v in PROFILES.items()},
         "strategies": STRATEGY_META, "account_types": list(ACCOUNT_TYPES), "defaults": user_defaults(user),
+        "min_pop_floor": MIN_POP_FLOOR, "level_names": LEVEL_NAMES, "options_level": lvl,
+        "options_level_label": LEVEL_NAMES.get(lvl),
     }
 
 
@@ -574,12 +584,13 @@ async def ticker_options(req: TickerOptionsReq, authorization: Optional[str] = H
     strategies = STRATEGIES if (not req.strategy or req.strategy == "auto") else [req.strategy]
     if req.strategy and req.strategy != "auto" and req.strategy not in STRATEGY_META:
         raise HTTPException(status_code=400, detail="Unknown strategy")
-    if profile != "any" and (not req.strategy or req.strategy == "auto"):
-        strategies = candidate_strategies(profile, "any")
+    level = d["options_level"]
+    if not req.strategy or req.strategy == "auto":
+        strategies = candidate_strategies(profile, "any", level) or candidate_strategies(profile, "any")
     ideas = await asyncio.to_thread(ideas_for_snapshot, snap, strategies, dte, account_type)
     if not ideas:
         raise HTTPException(status_code=500, detail="Engine could not price this ticker")
-    graded = [(i, passes(i, filters, profile if profile != "any" else "high_high", account_size)) for i in ideas]
+    graded = [(i, passes(i, filters, profile if profile != "any" else "high_high", account_size, level)) for i in ideas]
     ok = [i for i, f in graded if not f]
     chosen = max(ok or ideas, key=lambda i: i["score"])
     chosen["passes_filters"] = bool(ok) and chosen in ok
@@ -588,6 +599,8 @@ async def ticker_options(req: TickerOptionsReq, authorization: Optional[str] = H
     chosen["data_source"] = data_source_block()
     chosen["account_size"] = account_size
     chosen["filters"] = filters
+    chosen["options_level"] = level
+    chosen["options_level_label"] = LEVEL_NAMES.get(level)
     return {"result": chosen}
 
 

@@ -18,7 +18,7 @@ type Mode = "find" | "best";
 const EXPIRATION = ["daily", "week", "month", "3months"];
 const SECTORS = ["Tech", "Consumer Discretionary", "Financials", "Energy", "Healthcare", "Consumer Staples", "Industrials", "Index"];
 const PERIODS = ["day", "week", "month", "custom"];
-const REJECT_LABEL: Record<string, string> = { max_loss: "max loss", pop: "probability", roc: "return", liquidity: "liquidity", iv_rank: "IV rank", earnings: "earnings", undefined_risk: "undefined risk", account_type: "account type" };
+const REJECT_LABEL: Record<string, string> = { max_loss: "max loss", pop: "probability", roc: "return", liquidity: "liquidity", iv_rank: "IV rank", earnings: "earnings", undefined_risk: "undefined risk", account_type: "account type", options_level: "options level", capital: "capital needed" };
 
 export default function Discover() {
   const insets = useSafeAreaInsets();
@@ -38,10 +38,16 @@ export default function Discover() {
   const [summary, setSummary] = useState("");
   const [aiMap, setAiMap] = useState<Record<string, any>>({});
   const [aiLoading, setAiLoading] = useState(false);
+  const [locked, setLocked] = useState<Record<string, boolean>>({});
+  const [levelLabel, setLevelLabel] = useState("");
 
   useEffect(() => {
     api("/api/screener/profiles").then((r) => {
       if (r?.defaults) set({ account_type: r.defaults.account_type, account_size: String(r.defaults.account_size) });
+      const lk: Record<string, boolean> = {};
+      Object.entries(r?.profiles || {}).forEach(([k, v]: any) => { lk[k] = !!v.locked; });
+      setLocked(lk);
+      setLevelLabel(r?.options_level_label || "");
     }).catch(() => {});
   }, []);
 
@@ -103,7 +109,13 @@ export default function Discover() {
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.filterCard}>
           <Label>Risk profile</Label>
-          <ProfilePicker value={f.profile} onChange={pickProfile} />
+          {levelLabel ? (
+            <View testID="level-banner" style={styles.levelBanner}>
+              <Icon name="award" size={14} color={colors.brandPrimary} />
+              <Text style={styles.levelText}>Your options level: {levelLabel}</Text>
+            </View>
+          ) : null}
+          <ProfilePicker value={f.profile} onChange={pickProfile} locked={locked} />
           {mode === "find" ? (
             <>
               <ChipRow label="Expiration" value={exp} onChange={setExp} options={EXPIRATION} testKey="exp" />
@@ -260,6 +272,8 @@ const styles = StyleSheet.create({
   miniLabel: { fontSize: 9, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5 },
   miniVal: { fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"], marginTop: 2 },
 
+  levelBanner: { flexDirection: "row", alignItems: "center", gap: spacing.sm, backgroundColor: colors.brandSecondary, borderRadius: radius.md, padding: spacing.sm, marginBottom: spacing.md },
+  levelText: { flex: 1, fontSize: 12, fontWeight: "700", color: colors.onBrandSecondary },
   stats: { fontSize: 11, color: colors.muted, marginBottom: spacing.sm, lineHeight: 16 },
   empty: { alignItems: "center", gap: spacing.sm, padding: spacing.xl, backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md },
   emptyText: { color: colors.onSurfaceSecondary, fontSize: 13, textAlign: "center", lineHeight: 18 },

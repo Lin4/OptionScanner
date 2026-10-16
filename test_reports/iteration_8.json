@@ -1,0 +1,33 @@
+{
+  "summary": "Phase B (Discover 70% POP floor + options-level gating + new Sell Put/Sell Call naked strategies) verified end-to-end. Backend: 14/14 pytest cases pass (test_phase_b_options_level.py) against the public preview URL covering (a) 70% POP floor clamp on /api/screener/best-options for all three profiles and on /api/screener/find-stocks even when request sends min_pop:30 — response filters.min_pop >=70, min_pop_floor=70, every result pop >=70, options_level/options_level_label/allowed_strategies populated; (b) Level gating via GET /api/screener/profiles: Advanced+Full access -> level 4 with Sell Put/Sell Call/Short Strangle on high_high; Beginner+Full access -> level 1 (low_low strategies == {Cash Secured Put, Covered Call}, low_high & high_high locked=true); Intermediate+Full access capped to level 3 (naked excluded from high_high, Long Call still allowed); Advanced+'Level 1-2' -> level 1 (broker approval still gates); (c) /api/screener/ticker-options Sell Put returns collateral_by_account.cash.allowed=false, ira.allowed=false, reg_t.allowed=true; Sell Call returns max_loss=null (unlimited_loss=true) with the same cash/ira/reg_t allow pattern; auto strategy with Beginner cap selects Cash Secured Put/Covered Call only and reports options_level=1 on the idea; (d) rejected_by stats surface options_level/capital/account_type keys when a Beginner scans high_high; (e) high_high scan under Advanced+Full access returns options_level=4, allowed_strategies ⊇ {Sell Put, Sell Call, Short Strangle} and every result pop >=70. Frontend (390x844 mobile viewport, logged in trader@optiscreen.app / Intermediate+Level 3+ after restore): Discover shows level-banner 'Your options level: Level 3 · + spreads & iron condors'; three ProfilePicker cards profile-low_low / profile-low_high / profile-high_high render (none locked for this level-3 user, matching backend); toggle-finetune expands and the Min probability of profit slider shows 70% as its minimum/starting value; disc-run scan returns 5 ideas (AMZN 92.5, AMD 92.2, SPY 91.6, MSFT 91, META 91) — all >=70; scan-stats '15 stocks · 225 setups priced · 5 passed · filtered by probability (61), liquidity (40)'. Analyze screen shows both strat-Sell Put and strat-Sell Call chips as expected. Questionnaire restored to Intermediate / Level 3+ / $25k–$100k / Margin (Reg T) / Moderate at end of run (test_zz_restore_questionnaire). No red-screen errors; only expected expo-notifications warnings on web.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Discover ProfilePicker", "issues": ["profile cards do not expose a 'locked' aria/data attribute, so lock state is only visually distinguishable (badges 'Level 3+' / 'Full access only' render inline on the cards). Non-blocking for this seed user who is already at level 3, but adding aria-disabled or data-locked would make the locked flag testable without having to re-seed a lower-level user."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_b_options_level.py",
+    "/app/test_reports/pytest/phase_b_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "engine.user_options_level correctly intersects questionnaire-declared broker approval with the experience cap (min of the two). Good — matches the UX contract.",
+    "server.run_scan clamps filters['min_pop'] = max(filters['min_pop'], MIN_POP_FLOOR=70) BEFORE caching so no cached entry can leak sub-70 setups.",
+    "engine.passes treats ASSIGNMENT_STRATS (CSP, CC, Sell Put) via capital check (sel['collateral'] > account_size -> 'capital') instead of max_loss% — matches the user's requirement.",
+    "engine.collateral_by_account returns allowed=false with a human reason for Sell Put/Sell Call/Short Strangle under cash & ira — this is reflected in /ticker-options responses so the UI can grey them out.",
+    "candidate_strategies filters by profile AND max_level, so Discover never surfaces strategies the user is not approved for. Verified at the API and UI level."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_b_options_level.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None persistent. Test flipped trader@optiscreen.app questionnaire across multiple experience/options_level combinations and restored it to Intermediate / Level 3+ / $25k–$100k / Margin (Reg T) / Moderate via test_zz_restore_questionnaire at end of the pytest run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase A (iter 6) + Profile fix (iter 7) + Phase B options-level gating (this iter) all green. If a future iteration needs to visually assert the 'locked' state on profile cards, re-run with a Beginner questionnaire (POST /api/user/questionnaire with answers.experience='Beginner', options_level='Full access'); backend reports locked=true for low_high and high_high. Deprecated-package scan: still clean (no expo-av/expo-barcode-scanner/expo-background-fetch).",
+  "rca_of_issue": "Not applicable — feature-addition verification, not a bug fix. All review-request assertions matched implementation on the first pass."
+}

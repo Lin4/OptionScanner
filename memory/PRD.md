@@ -60,6 +60,14 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - Speed: background pre-warm of universe, 6h candle cache, 60s scan cache, AI explanations async via `/screener/explain` (cached 30m).
 - Alert threshold validation.
 
+## Phase B — POP floor + options-level gating — DONE
+- Discover always enforces POP >= 70% (MIN_POP_FLOOR) for every profile; slider min 70.
+- Strategies gated by questionnaire options_level, capped by experience (None/Beginner→L1, Intermediate→L3).
+  L1: CSP, Covered Call · L3: + credit spreads, iron condor, debit spreads · L4 (Full): + naked Sell Put, Sell Call, Short Strangle.
+- New naked strategies Sell Put / Sell Call (margin only). Credit strategies scanned at 3 strike distances.
+- CSP/CC/Sell Put sized by collateral <= account size (not max-loss %).
+- Locked profile cards + level banner on Discover.
+
 ## Backlog (from plan)
 - Phase 2: long-term research page (ownership, dividends history, filings risks, price-target dispersion), paper trading + public track record, IV/setup alerts, nav order (stock screening first), tier data rules.
 - Phase 3: backtesting, position monitoring, broker connection, trade journal, intraday tools, real options data feed.

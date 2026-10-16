@@ -19,30 +19,48 @@ SLIPPAGE_FRACTION = 0.25  # fraction of the bid-ask spread paid vs mid on every 
 HIGH_LIQ = {"SPY", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL", "AMD", "QQQ", "IWM"}
 ACCOUNT_TYPES = ("cash", "ira", "reg_t", "portfolio_margin")
 
+# level = broker options-approval level needed (1 covered/CSP, 2 long options, 3 spreads, 4 naked)
 STRATEGY_META: Dict[str, Dict[str, Any]] = {
-    "Cash Secured Put":    {"bias": ["bullish", "neutral"], "naked": False, "profile": "low_low"},
-    "Covered Call":        {"bias": ["bullish", "neutral"], "naked": False, "profile": "low_low"},
-    "Bull Put Spread":     {"bias": ["bullish"], "naked": False, "profile": "low_low"},
-    "Bear Call Spread":    {"bias": ["bearish"], "naked": False, "profile": "low_low"},
-    "Iron Condor":         {"bias": ["neutral"], "naked": False, "profile": "low_low"},
-    "Bull Call Spread":    {"bias": ["bullish"], "naked": False, "profile": "low_high"},
-    "Bear Put Spread":     {"bias": ["bearish"], "naked": False, "profile": "low_high"},
-    "Long Call Butterfly": {"bias": ["neutral"], "naked": False, "profile": "low_high"},
-    "Long Call":           {"bias": ["bullish"], "naked": False, "profile": "high_high"},
-    "Long Put":            {"bias": ["bearish"], "naked": False, "profile": "high_high"},
-    "Long Straddle":       {"bias": ["neutral"], "naked": False, "profile": "high_high"},
-    "Long Strangle":       {"bias": ["neutral"], "naked": False, "profile": "high_high"},
-    "Short Strangle":      {"bias": ["neutral"], "naked": True, "profile": "high_high"},
+    "Cash Secured Put":    {"bias": ["bullish", "neutral"], "naked": False, "credit": True, "level": 1, "profiles": ["low_low"]},
+    "Covered Call":        {"bias": ["bullish", "neutral"], "naked": False, "credit": True, "level": 1, "profiles": ["low_low"]},
+    "Bull Put Spread":     {"bias": ["bullish"], "naked": False, "credit": True, "level": 3, "profiles": ["low_low", "low_high"]},
+    "Bear Call Spread":    {"bias": ["bearish"], "naked": False, "credit": True, "level": 3, "profiles": ["low_low", "low_high"]},
+    "Iron Condor":         {"bias": ["neutral"], "naked": False, "credit": True, "level": 3, "profiles": ["low_low", "low_high"]},
+    "Bull Call Spread":    {"bias": ["bullish"], "naked": False, "credit": False, "level": 3, "profiles": ["low_high"]},
+    "Bear Put Spread":     {"bias": ["bearish"], "naked": False, "credit": False, "level": 3, "profiles": ["low_high"]},
+    "Long Call Butterfly": {"bias": ["neutral"], "naked": False, "credit": False, "level": 3, "profiles": ["low_high"]},
+    "Long Call":           {"bias": ["bullish"], "naked": False, "credit": False, "level": 2, "profiles": ["high_high"]},
+    "Long Put":            {"bias": ["bearish"], "naked": False, "credit": False, "level": 2, "profiles": ["high_high"]},
+    "Long Straddle":       {"bias": ["neutral"], "naked": False, "credit": False, "level": 2, "profiles": ["high_high"]},
+    "Long Strangle":       {"bias": ["neutral"], "naked": False, "credit": False, "level": 2, "profiles": ["high_high"]},
+    "Sell Put":            {"bias": ["bullish", "neutral"], "naked": True, "credit": True, "level": 4, "profiles": ["high_high"]},
+    "Sell Call":           {"bias": ["bearish", "neutral"], "naked": True, "credit": True, "level": 4, "profiles": ["high_high"]},
+    "Short Strangle":      {"bias": ["neutral"], "naked": True, "credit": True, "level": 4, "profiles": ["high_high"]},
 }
+for _m in STRATEGY_META.values():
+    _m["profile"] = _m["profiles"][0]
 STRATEGIES = list(STRATEGY_META.keys())
+ASSIGNMENT_STRATS = {"Cash Secured Put", "Covered Call", "Sell Put"}  # sized by collateral vs account
+MIN_POP_FLOOR = 70.0  # Discover never shows setups below this probability of profit
+CREDIT_VARIANTS = (1.0, 1.35, 1.7)  # short-strike distance multipliers (further OTM = higher POP)
+LEVEL_NAMES = {1: "Level 1 · covered calls & cash-secured puts", 2: "Level 2 · + long options",
+               3: "Level 3 · + spreads & iron condors", 4: "Full access · + naked selling"}
+
+
+def user_options_level(q: Dict[str, Any]) -> int:
+    """Approval level from questionnaire; experience can only lower it."""
+    lvl = {"Not approved": 1, "Level 1-2": 1, "Level 3+": 3, "Full access": 4}.get((q or {}).get("options_level"), 1)
+    cap = {"None": 1, "Beginner": 1, "Intermediate": 3, "Advanced": 4}.get((q or {}).get("experience"), 4)
+    return min(lvl, cap)
+
 
 PROFILES: Dict[str, Dict[str, Any]] = {
     "low_low": {"label": "Low risk · Low reward", "min_pop": 70, "max_loss_pct": 5.0, "min_roc": 1.0,
-                "allow_undefined": False, "structures": "Credit spreads, covered calls, cash-secured puts"},
-    "low_high": {"label": "Low risk · High reward", "min_pop": 30, "max_loss_pct": 3.0, "min_roc": 50.0,
-                 "allow_undefined": False, "structures": "Debit spreads, butterflies"},
-    "high_high": {"label": "High risk · High reward", "min_pop": 15, "max_loss_pct": 10.0, "min_roc": 0.0,
-                  "allow_undefined": True, "structures": "Long OTM options, straddles/strangles, naked short strangles"},
+                "allow_undefined": False, "structures": "Covered calls, cash-secured puts, credit spreads, iron condors"},
+    "low_high": {"label": "Low risk · Higher reward", "min_pop": 70, "max_loss_pct": 3.0, "min_roc": 15.0,
+                 "allow_undefined": False, "structures": "Defined-risk credit spreads & iron condors aiming for higher return on capital"},
+    "high_high": {"label": "High risk · High reward", "min_pop": 70, "max_loss_pct": 10.0, "min_roc": 0.0,
+                  "allow_undefined": True, "structures": "Naked sell puts / calls, short strangles (large or undefined loss)"},
 }
 
 EXP_DAYS = {"daily": 1, "day": 1, "week": 7, "month": 30, "3months": 90, "custom": 14}
@@ -114,27 +132,30 @@ def _rk(x: float, inc: float) -> float:
     return round(max(inc, round(x / inc) * inc), 2)
 
 
-def build_legs(name: str, S: float, iv: float, dte: int, exp_date: str) -> List[Dict]:
+def build_legs(name: str, S: float, iv: float, dte: int, exp_date: str, scale: float = 1.0) -> List[Dict]:
     inc = strike_inc(S)
-    em = max(S * iv * math.sqrt(max(dte, 1) / 365), inc)
-    w = max(inc, _rk(em * 0.5, inc))
+    em0 = max(S * iv * math.sqrt(max(dte, 1) / 365), inc)
+    w = max(inc, _rk(em0 * 0.5, inc))
+    em = em0 * scale  # scale pushes short strikes further OTM
     atm = _rk(S, inc)
 
     def L(action, typ, strike, qty=1):
         return {"action": action, "type": typ, "strike": round(strike, 2), "exp": exp_date, "qty": qty}
 
-    if name == "Cash Secured Put":
-        return [L("Sell", "Put", _rk(S - 0.75 * em, inc))]
+    if name in ("Cash Secured Put", "Sell Put"):
+        return [L("Sell", "Put", min(atm - inc, _rk(S - 0.75 * em, inc)))]
+    if name == "Sell Call":
+        return [L("Sell", "Call", max(atm + inc, _rk(S + 0.75 * em, inc)))]
     if name == "Covered Call":
         return [L("Buy", "Stock", round(S, 2)), L("Sell", "Call", max(atm + inc, _rk(S + 0.75 * em, inc)))]
     if name == "Bull Put Spread":
-        k = _rk(S - 0.5 * em, inc)
+        k = min(atm - inc, _rk(S - 0.5 * em, inc))
         return [L("Sell", "Put", k), L("Buy", "Put", _rk(k - w, inc))]
     if name == "Bear Call Spread":
-        k = _rk(S + 0.5 * em, inc)
+        k = max(atm + inc, _rk(S + 0.5 * em, inc))
         return [L("Sell", "Call", k), L("Buy", "Call", k + w)]
     if name == "Iron Condor":
-        ps, cs = _rk(S - 0.75 * em, inc), max(atm + inc, _rk(S + 0.75 * em, inc))
+        ps, cs = min(atm - inc, _rk(S - 0.75 * em, inc)), max(atm + inc, _rk(S + 0.75 * em, inc))
         return [L("Sell", "Put", ps), L("Buy", "Put", _rk(ps - w, inc)), L("Sell", "Call", cs), L("Buy", "Call", cs + w)]
     if name == "Bull Call Spread":
         return [L("Buy", "Call", atm), L("Sell", "Call", max(atm + inc, _rk(S + em, inc)))]
@@ -330,6 +351,12 @@ def collateral_by_account(name: str, legs: List[Dict], S: float, premium_net: fl
         K = float(shorts[0]["strike"])
         res["cash"] = res["ira"] = K * 100 - credit
         res["reg_t"] = naked_put(shorts[0])
+    elif name == "Sell Put":
+        res["cash"] = res["ira"] = None
+        res["reg_t"] = naked_put(shorts[0])
+    elif name == "Sell Call":
+        res["cash"] = res["ira"] = None
+        res["reg_t"] = naked_call(shorts[0])
     elif name == "Covered Call":
         res["cash"] = res["ira"] = S * 100 - credit
         res["reg_t"] = 0.5 * S * 100 - credit
@@ -390,10 +417,10 @@ def events_and_assignment(name: str, legs: List[Dict], S: float, iv: float, dte:
 # ---------------------------------------------------------------- full idea
 def build_idea(ticker: str, info: Dict[str, Any], name: str, S: float, vol: Dict[str, Any], dte: int,
                account_type: str = "reg_t", earnings_date: Optional[str] = None,
-               dividend_yield: Optional[float] = None) -> Dict[str, Any]:
+               dividend_yield: Optional[float] = None, scale: float = 1.0) -> Dict[str, Any]:
     iv, hv = vol["iv"], vol["hv20"]
     exp_date = (datetime.now(timezone.utc) + timedelta(days=dte)).strftime("%Y-%m-%d")
-    legs, pricing = price_legs(ticker, build_legs(name, S, iv, dte, exp_date), S, iv, dte)
+    legs, pricing = price_legs(ticker, build_legs(name, S, iv, dte, exp_date, scale), S, iv, dte)
     premium_net = pricing["net_fill"]
     fees = pricing["fees"]
     stats = payoff_stats(legs, S, premium_net, fees)
@@ -410,7 +437,7 @@ def build_idea(ticker: str, info: Dict[str, Any], name: str, S: float, vol: Dict
     idea = {
         "ticker": ticker, "name": info.get("name", ticker), "sector": info.get("sector", "Unknown"),
         "price": round(S, 2), "strategy": name, "strategy_bias": STRATEGY_META[name]["bias"],
-        "profile": STRATEGY_META[name]["profile"],
+        "profile": STRATEGY_META[name]["profile"], "options_level_required": STRATEGY_META[name]["level"],
         "legs": legs, "premium": round(abs(premium_net), 2), "premium_net": premium_net,
         "premium_type": "credit" if premium_net > 0 else "debit",
         "expiration": exp_date, "expiration_days": dte,
@@ -471,14 +498,20 @@ def default_filters(profile: str) -> Dict[str, Any]:
             "min_oi": 100, "max_spread_pct": 25.0, "min_iv_rank": 0.0, "exclude_earnings": False}
 
 
-def passes(idea: Dict[str, Any], f: Dict[str, Any], profile: str, account_size: float) -> List[str]:
+def passes(idea: Dict[str, Any], f: Dict[str, Any], profile: str, account_size: float, max_level: int = 4) -> List[str]:
     """Return a list of failure reasons (empty list = passes)."""
     fails = []
+    if STRATEGY_META[idea["strategy"]]["level"] > max_level:
+        fails.append("options_level")
     p = PROFILES.get(profile, PROFILES["low_low"])
     sel = idea["collateral_by_account"].get(idea["account_type"], {})
     if not sel.get("allowed"):
         fails.append("account_type")
-    if idea["max_loss"] is None:
+    if idea["strategy"] in ASSIGNMENT_STRATS:
+        # Stock-backed / assignment trades: max loss = stock to $0, so test affordability instead
+        if (sel.get("collateral") or 0) > account_size:
+            fails.append("capital")
+    elif idea["max_loss"] is None:
         if not p["allow_undefined"]:
             fails.append("undefined_risk")
     elif abs(idea["max_loss"]) / max(account_size, 1) * 100 > f["max_loss_pct"]:
@@ -497,10 +530,12 @@ def passes(idea: Dict[str, Any], f: Dict[str, Any], profile: str, account_size: 
     return fails
 
 
-def candidate_strategies(profile: str, bias: str) -> List[str]:
+def candidate_strategies(profile: str, bias: str, max_level: int = 4) -> List[str]:
     out = []
     for n, m in STRATEGY_META.items():
-        if profile != "any" and m["profile"] != profile:
+        if profile != "any" and profile not in m["profiles"]:
+            continue
+        if m["level"] > max_level:
             continue
         if bias not in ("any", "", None) and bias not in m["bias"]:
             continue

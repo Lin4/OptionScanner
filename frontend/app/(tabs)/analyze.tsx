@@ -14,7 +14,7 @@ import { useTTS, useSTT } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
 import { ACCOUNTS, Chips, Label, OptionInsights, accountLabel } from "@/src/screen";
 
-const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Short Strangle"];
+const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Sell Put", "Sell Call", "Short Strangle"];
 
 type Lab = "day" | "swing" | "long" | "options";
 
@@ -334,8 +334,8 @@ function OptionsLab({ r }: { r: any }) {
       {(r.alternatives || []).length ? (
         <>
           <Text style={styles.sectionLabel}>Other strategies compared</Text>
-          {r.alternatives.slice(0, 6).map((a: any) => (
-            <View key={a.strategy} style={styles.altRow}>
+          {r.alternatives.slice(0, 6).map((a: any, i: number) => (
+            <View key={`${a.strategy}-${i}`} style={styles.altRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.legText}>{a.strategy}</Text>
                 <Text style={styles.legTheo}>POP {a.pop}% · ROC {a.roc_pct != null ? `${a.roc_pct}%` : "∞"} · max loss {a.max_loss != null ? `$${a.max_loss}` : "undef"}</Text>

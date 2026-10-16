@@ -23,9 +23,9 @@ export type Filters = {
 };
 
 export const PROFILE_INFO: Record<ProfileId, { title: string; sub: string; icon: any; defaults: Partial<Filters> }> = {
-  low_low: { title: "Low risk · Low reward", sub: "Defined loss · POP 70%+ · credit spreads, covered calls, CSPs", icon: "shield", defaults: { min_pop: 70, max_loss_pct: 5, min_roc: 1 } },
-  low_high: { title: "Low risk · High reward", sub: "Defined loss · POP 30–50% · debit spreads, butterflies", icon: "target", defaults: { min_pop: 30, max_loss_pct: 3, min_roc: 50 } },
-  high_high: { title: "High risk · High reward", sub: "Large/undefined loss · long OTM, straddles, naked strangles", icon: "zap", defaults: { min_pop: 15, max_loss_pct: 10, min_roc: 0 } },
+  low_low: { title: "Low risk · Low reward", sub: "Covered calls, cash-secured puts, credit spreads, iron condors", icon: "shield", defaults: { min_pop: 70, max_loss_pct: 5, min_roc: 1 } },
+  low_high: { title: "Low risk · Higher reward", sub: "Defined-risk credit spreads & iron condors · ROC 15%+ · Level 3+", icon: "target", defaults: { min_pop: 70, max_loss_pct: 3, min_roc: 15 } },
+  high_high: { title: "High risk · High reward", sub: "Naked sell puts / calls, short strangles · Full access only", icon: "zap", defaults: { min_pop: 70, max_loss_pct: 10, min_roc: 0 } },
 };
 
 export const ACCOUNTS = [
@@ -68,14 +68,15 @@ export function Label({ children }: { children: React.ReactNode }) {
   return <Text style={s.label}>{children}</Text>;
 }
 
-export function ProfilePicker({ value, onChange }: { value: ProfileId; onChange: (p: ProfileId) => void }) {
+export function ProfilePicker({ value, onChange, locked = {} }: { value: ProfileId; onChange: (p: ProfileId) => void; locked?: Record<string, boolean> }) {
   return (
     <View style={{ gap: spacing.sm, marginBottom: spacing.md }}>
       {(Object.keys(PROFILE_INFO) as ProfileId[]).map((id) => {
         const p = PROFILE_INFO[id];
         const active = value === id;
+        const isLocked = !!locked[id];
         return (
-          <Pressable key={id} testID={`profile-${id}`} onPress={() => onChange(id)} style={[s.profile, active && s.profileActive]}>
+          <Pressable key={id} testID={`profile-${id}`} disabled={isLocked} onPress={() => onChange(id)} style={[s.profile, active && s.profileActive, isLocked && { opacity: 0.5 }]}>
             <View style={[s.profileIcon, active && { backgroundColor: colors.brandPrimary }]}>
               <Icon name={p.icon} size={16} color={active ? colors.onBrandPrimary : colors.brandPrimary} />
             </View>
@@ -83,11 +84,11 @@ export function ProfilePicker({ value, onChange }: { value: ProfileId; onChange:
               <Text style={s.profileTitle}>{p.title}</Text>
               <Text style={s.profileSub}>{p.sub}</Text>
             </View>
-            <Icon name={active ? "check-circle" : "circle"} size={18} color={active ? colors.brandPrimary : colors.borderStrong} />
+            <Icon name={isLocked ? "lock" : active ? "check-circle" : "circle"} size={18} color={active ? colors.brandPrimary : colors.borderStrong} />
           </Pressable>
         );
       })}
-      <Text style={s.hint}>High risk · low reward is excluded — it has no valid use case.</Text>
+      <Text style={s.hint}>Every pick has at least 70% probability of profit. Locked profiles need a higher options approval level or more experience (edit your answers in Profile).</Text>
     </View>
   );
 }
@@ -135,7 +136,7 @@ export function FilterPanel({ f, set }: { f: Filters; set: (p: Partial<Filters>)
       {open ? (
         <View style={s.fineBox}>
           <SliderRow testID="sl-max-loss" label="Max loss (% of account)" value={f.max_loss_pct} min={0.5} max={25} step={0.5} suffix="%" onChange={(v) => set({ max_loss_pct: v })} />
-          <SliderRow testID="sl-min-pop" label="Min probability of profit" value={f.min_pop} min={0} max={95} step={1} suffix="%" onChange={(v) => set({ min_pop: v })} />
+          <SliderRow testID="sl-min-pop" label="Min probability of profit" value={Math.max(f.min_pop, 70)} min={70} max={95} step={1} suffix="%" onChange={(v) => set({ min_pop: v })} />
           <SliderRow testID="sl-min-roc" label="Min return on capital" value={f.min_roc} min={0} max={200} step={1} suffix="%" onChange={(v) => set({ min_roc: v })} />
           <SliderRow testID="sl-min-iv" label="Min IV rank" value={f.min_iv_rank} min={0} max={90} step={5} onChange={(v) => set({ min_iv_rank: v })} />
           <Label>Min open interest (est.)</Label>
