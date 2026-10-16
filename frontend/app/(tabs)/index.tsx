@@ -108,6 +108,11 @@ export default function Discover() {
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.filterCard}>
+          <Pressable testID="open-track-record" onPress={() => router.push("/track-record" as any)} style={styles.trackLink}>
+            <Icon name="check-square" size={16} color={colors.brandPrimary} />
+            <Text style={styles.trackText}>Track record: did 70%+ picks really win?</Text>
+            <Icon name="chevron-right" size={16} color={colors.brandPrimary} />
+          </Pressable>
           <Label>Risk profile</Label>
           {levelLabel ? (
             <View testID="level-banner" style={styles.levelBanner}>
@@ -272,6 +277,8 @@ const styles = StyleSheet.create({
   miniLabel: { fontSize: 9, color: colors.muted, textTransform: "uppercase", letterSpacing: 0.5 },
   miniVal: { fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"], marginTop: 2 },
 
+  trackLink: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 44, paddingHorizontal: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.brandPrimary, marginBottom: spacing.md },
+  trackText: { flex: 1, fontSize: 13, fontWeight: "700", color: colors.brandPrimary },
   levelBanner: { flexDirection: "row", alignItems: "center", gap: spacing.sm, backgroundColor: colors.brandSecondary, borderRadius: radius.md, padding: spacing.sm, marginBottom: spacing.md },
   levelText: { flex: 1, fontSize: 12, fontWeight: "700", color: colors.onBrandSecondary },
   stats: { fontSize: 11, color: colors.muted, marginBottom: spacing.sm, lineHeight: 16 },

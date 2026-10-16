@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useFocusEffect, useRouter } from "expo-router";
 import Icon from "@react-native-vector-icons/feather";
 
 import { api } from "@/src/api";
@@ -14,6 +15,11 @@ export default function Learn() {
   const [open, setOpen] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("All");
   const { play, stop, playing } = useTTS();
+  const router = useRouter();
+  const [levels, setLevels] = useState<any>(null);
+  useFocusEffect(useCallback(() => {
+    api("/api/learn/levels").then(setLevels).catch(() => {});
+  }, []));
 
   useEffect(() => {
     api("/api/learn/cards").then((r) => setCards(r.cards || [])).catch(() => {});
@@ -40,6 +46,29 @@ export default function Learn() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
+        {levels?.levels?.length ? (
+          <View testID="level-path" style={{ marginBottom: spacing.lg }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={styles.pathTitle}>Level-up path</Text>
+              <Badge text={`${levels.levels.filter((l: any) => l.passed).length}/${levels.levels.length} badges`} kind="brand" />
+            </View>
+            <Text style={styles.pathNote}>{levels.note}</Text>
+            {levels.levels.map((l: any) => (
+              <Pressable key={l.level} testID={`level-${l.level}`} onPress={() => router.push(`/lesson/${l.level}` as any)} style={styles.levelRow}>
+                <View style={[styles.levelIcon, l.passed && { backgroundColor: colors.success }]}>
+                  <Icon name={l.passed ? "award" : l.unlocked_for_trading ? "book" : "lock"} size={16} color={l.passed ? colors.onBrandPrimary : colors.brandPrimary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.levelTitle}>{l.title}</Text>
+                  <Text style={styles.levelSub}>
+                    {l.lesson_count} lessons · quiz {l.best_score}/{l.quiz_len} · {l.unlocked_for_trading ? "your level" : "locked for trading"}
+                  </Text>
+                </View>
+                {l.passed ? <Badge text="Done" kind="success" /> : <Icon name="chevron-right" size={16} color={colors.muted} />}
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         {visible.map((c) => {
           const expanded = open === c.id;
           return (
@@ -113,6 +142,12 @@ const styles = StyleSheet.create({
   modeChipTextActive: { color: colors.onBrandPrimary },
 
   scroll: { padding: spacing.lg, paddingBottom: 100 },
+  pathTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
+  pathNote: { fontSize: 11, color: colors.muted, marginTop: 4, marginBottom: spacing.sm, lineHeight: 16 },
+  levelRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 56, padding: spacing.md, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: spacing.sm },
+  levelIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.brandSecondary, alignItems: "center", justifyContent: "center" },
+  levelTitle: { fontSize: 14, fontWeight: "800", color: colors.onSurface },
+  levelSub: { fontSize: 11, color: colors.muted, marginTop: 2 },
   card: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.lg, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.sm },
   cardTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface, marginTop: 6 },
   outlook: { fontSize: 12, color: colors.muted, marginTop: 2 },

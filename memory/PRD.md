@@ -68,6 +68,12 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - CSP/CC/Sell Put sized by collateral <= account size (not max-loss %).
 - Locked profile cards + level banner on Discover.
 
+## Phase C — Track record, Smart alerts, Level-up lessons — DONE (`backend/extras.py`)
+- Track record (`/track-record` screen, `GET /api/track-record`): every Discover pick logged in `picks` (dedup key) and settled at real close on expiry; hypothetical 90-day backtest (engine re-run on past daily closes, refreshed every 6h) with predicted-vs-actual POP buckets.
+- Smart alerts: alert kind `smart_setup` (note = profile); loop every 30 min in US market hours, max 3/day, 24h dedup, level-gated; feed `GET /api/alerts/feed`, manual `POST /api/alerts/smart/check`; push via Emergent push (native build only).
+- Level-up lessons: 4 levels × 3 lessons + 3-question quiz (`/api/learn/levels`, `/lesson/[level]` screen), badges in `lesson_progress`; doesn't change options level.
+- Note: `import extras` must stay AFTER load_dotenv in server.py (market.py reads API keys at import).
+
 ## Backlog (from plan)
 - Phase 2: long-term research page (ownership, dividends history, filings risks, price-target dispersion), paper trading + public track record, IV/setup alerts, nav order (stock screening first), tier data rules.
 - Phase 3: backtesting, position monitoring, broker connection, trade journal, intraday tools, real options data feed.

@@ -33,6 +33,7 @@ from market import (
     sma as calc_sma, rsi as calc_rsi, support_resistance, detect_candle_patterns, detect_chart_patterns,
 )
 from market import get_earnings, get_metrics, _cache_get as market_cache_get
+import extras
 from engine import (
     STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
@@ -510,6 +511,8 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
         "fetched_at": now_utc().isoformat(),
     }
     cache_set(key, out)
+    if EXTRAS.get("log_picks") and results:
+        asyncio.create_task(EXTRAS["log_picks"](results, profile))
     return out
 
 
@@ -777,9 +780,9 @@ async def watchlist_list(authorization: Optional[str] = Header(default=None)):
 @api_router.post("/alerts/add")
 async def alerts_add(req: AlertAddReq, authorization: Optional[str] = Header(default=None)):
     user = await get_user_from_token(authorization)
-    if req.kind not in ("price_above", "price_below", "earnings"):
+    if req.kind not in ("price_above", "price_below", "earnings", "smart_setup"):
         raise HTTPException(status_code=400, detail="Invalid alert kind")
-    if req.kind != "earnings" and req.threshold is None:
+    if req.kind in ("price_above", "price_below") and req.threshold is None:
         raise HTTPException(status_code=400, detail="Price alerts need a positive threshold")
     alert = {
         "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
@@ -1040,9 +1043,15 @@ async def startup():
         await db.watchlist.create_index([("user_id", 1), ("ticker", 1)], unique=True)
         await db.alerts.create_index("user_id")
         await db.alerts.create_index("alert_id", unique=True)
+        await db.picks.create_index("key", unique=True)
+        await db.picks.create_index([("status", 1), ("expiration", 1)])
+        await db.alert_events.create_index([("user_id", 1), ("created_at", -1)])
+        await db.lesson_progress.create_index([("user_id", 1), ("level", 1)], unique=True)
     except Exception as e:
         logger.warning(f"index: {e}")
     asyncio.create_task(warm_universe_loop())
+    asyncio.create_task(EXTRAS["track_loop"]())
+    asyncio.create_task(EXTRAS["smart_loop"]())
     logger.info("OptiScreen API ready")
 
 @app.on_event("shutdown")
@@ -1053,6 +1062,17 @@ async def shutdown():
 @api_router.get("/")
 async def root():
     return {"service": "OptiScreen API", "ok": True}
+
+
+async def _scan_for_user(user: Dict[str, Any], profile: str) -> Dict[str, Any]:
+    req = BestOptionsReq(period="month", profile=profile, limit=5)
+    return await run_scan(req, user, 30, UNIVERSE[:])
+
+
+EXTRAS: Dict[str, Any] = extras.register(
+    api_router, db=db, get_user=get_user_from_token, user_defaults=user_defaults, scan_for_user=_scan_for_user,
+    send_push=send_push, universe=UNIVERSE, universe_index=UNIVERSE_INDEX, logger=logger, ticker_snapshot=ticker_snapshot,
+)
 
 
 app.include_router(api_router)

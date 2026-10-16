@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Modal, KeyboardAvoidingView, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import Icon from "@react-native-vector-icons/feather";
 
 import { api } from "@/src/api";
@@ -15,7 +15,9 @@ const KINDS = [
   { id: "price_above", label: "Price above", icon: "trending-up" },
   { id: "price_below", label: "Price below", icon: "trending-down" },
   { id: "earnings", label: "Earnings approaching", icon: "calendar" },
+  { id: "smart_setup", label: "New 70%+ setups", icon: "zap" },
 ];
+const PROFILE_OPTS = [{ id: "low_low", label: "Low risk" }, { id: "low_high", label: "Higher reward" }, { id: "high_high", label: "High risk" }];
 
 export default function Alerts() {
   const insets = useSafeAreaInsets();
@@ -25,21 +27,37 @@ export default function Alerts() {
   const [kind, setKind] = useState("price_above");
   const [threshold, setThreshold] = useState("");
   const [loading, setLoading] = useState(false);
+  const [feed, setFeed] = useState<any[]>([]);
+  const [profile, setProfile] = useState("low_low");
+  const [checking, setChecking] = useState(false);
+  const router = useRouter();
 
   const load = useCallback(async () => {
     try { const r = await api("/api/alerts"); setItems(r.items || []); } catch {}
+    try { const f = await api("/api/alerts/feed"); setFeed(f.items || []); } catch {}
   }, []);
+  const hasSmart = items.some((i) => i.kind === "smart_setup" && i.active);
+
+  const checkNow = async () => {
+    setChecking(true);
+    try {
+      const r = await api("/api/alerts/smart/check", { method: "POST" });
+      toast(r.new?.length ? `${r.new.length} new setup${r.new.length > 1 ? "s" : ""}` : "No new setups (max 3 alerts/day)", "info");
+      load();
+    } catch (e: any) { toast(e.message || "Failed", "error"); } finally { setChecking(false); }
+  };
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const add = async () => {
-    if (!ticker.trim()) { toast("Enter a ticker", "error"); return; }
+    const smart = kind === "smart_setup";
+    if (!smart && !ticker.trim()) { toast("Enter a ticker", "error"); return; }
     if ((kind === "price_above" || kind === "price_below") && !threshold.trim()) { toast("Enter a price threshold", "error"); return; }
     setLoading(true);
     try {
       await api("/api/alerts/add", {
         method: "POST",
-        body: JSON.stringify({ ticker: ticker.trim().toUpperCase(), kind, threshold: threshold ? parseFloat(threshold) : null }),
+        body: JSON.stringify(smart ? { ticker: "ALL", kind, note: profile } : { ticker: ticker.trim().toUpperCase(), kind, threshold: threshold ? parseFloat(threshold) : null }),
       });
       // Also fire a test push for earnings alerts
       if (kind === "earnings") {
@@ -60,7 +78,7 @@ export default function Alerts() {
         <View style={styles.headerRow}>
           <View>
             <Text style={styles.title}>Alerts</Text>
-            <Text style={styles.sub}>Price moves and upcoming earnings</Text>
+            <Text style={styles.sub}>New 70%+ setups, price moves & earnings</Text>
           </View>
           <Pressable testID="add-alert" onPress={() => setOpen(true)} style={styles.addBtn}>
             <Icon name="plus" size={18} color={colors.onBrandPrimary} />
@@ -69,6 +87,29 @@ export default function Alerts() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
+        {hasSmart ? (
+          <View testID="smart-feed" style={{ marginBottom: spacing.lg }}>
+            <View style={styles.feedHead}>
+              <Text style={styles.feedTitle}>Setup alerts</Text>
+              <Pressable testID="smart-check-now" onPress={checkNow} disabled={checking} style={styles.checkBtn}>
+                <Icon name="refresh-cw" size={13} color={colors.brandPrimary} />
+                <Text style={styles.checkText}>{checking ? "Checking…" : "Check now"}</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.emptySub}>Checked every 30 min during market hours · max 3 alerts/day · only strategies your level unlocks</Text>
+            {feed.map((e) => (
+              <Pressable key={e.event_id} testID={`feed-${e.event_id}`} onPress={() => router.push({ pathname: "/(tabs)/analyze", params: { ticker: e.ticker, strategy: e.strategy, range: e.expiration_days > 45 ? "3months" : e.expiration_days > 10 ? "month" : "week" } } as any)} style={styles.feedRow}>
+                <View style={styles.iconWrap}><Icon name="zap" size={16} color={colors.brandPrimary} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowTicker}>{e.title}</Text>
+                  <Text style={styles.rowDesc}>{e.message} · {new Date(e.created_at).toLocaleString()}</Text>
+                </View>
+                <Icon name="chevron-right" size={16} color={colors.muted} />
+              </Pressable>
+            ))}
+            {!feed.length ? <Text style={styles.rowDesc}>No setup alerts yet.</Text> : null}
+          </View>
+        ) : null}
         {items.map((it) => (
           <View key={it.alert_id} style={styles.row}>
             <View style={styles.iconWrap}>
@@ -80,7 +121,7 @@ export default function Alerts() {
                 <Badge text={it.active ? "active" : "paused"} kind={it.active ? "success" : "info"} />
               </View>
               <Text style={styles.rowDesc}>
-                {it.kind === "earnings" ? "Earnings approaching reminder" : `${it.kind.replace("_", " ")} $${it.threshold}`}
+                {it.kind === "earnings" ? "Earnings approaching reminder" : it.kind === "smart_setup" ? `New 70%+ setups · ${PROFILE_OPTS.find((p) => p.id === it.note)?.label || "Low risk"}` : `${it.kind.replace("_", " ")} $${it.threshold}`}
               </Text>
             </View>
             <Pressable testID={`alert-remove-${it.alert_id}`} onPress={() => remove(it.alert_id)} style={styles.removeBtn}>
@@ -107,7 +148,7 @@ export default function Alerts() {
                 <Icon name="x" size={16} color={colors.muted} />
               </Pressable>
             </View>
-            <Input testID="alert-ticker" label="Ticker" value={ticker} onChangeText={(v) => setTicker(v.toUpperCase())} placeholder="e.g., AAPL" autoCapitalize="characters" />
+            {kind !== "smart_setup" ? <Input testID="alert-ticker" label="Ticker" value={ticker} onChangeText={(v) => setTicker(v.toUpperCase())} placeholder="e.g., AAPL" autoCapitalize="characters" /> : null}
             <Text style={styles.chipLabel}>Trigger</Text>
             <View style={styles.chipsWrap}>
               {KINDS.map((k) => {
@@ -120,6 +161,19 @@ export default function Alerts() {
                 );
               })}
             </View>
+            {kind === "smart_setup" ? (
+              <>
+                <Text style={styles.chipLabel}>Risk profile</Text>
+                <View style={styles.chipsWrap}>
+                  {PROFILE_OPTS.map((p) => (
+                    <Pressable key={p.id} testID={`smart-profile-${p.id}`} onPress={() => setProfile(p.id)} style={[styles.chip, profile === p.id && styles.chipActive]}>
+                      <Text style={[styles.chipText, profile === p.id && styles.chipTextActive]}>{p.label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <Text style={[styles.emptySub, { marginBottom: spacing.md, textAlign: "left" }]}>Scans all stocks every 30 min in market hours and alerts you (max 3/day) when a new 70%+ POP setup your options level allows appears. Push works in a phone build, not Expo Go.</Text>
+              </>
+            ) : null}
             {(kind === "price_above" || kind === "price_below") ? (
               <Input testID="alert-threshold" label="Price threshold ($)" value={threshold} onChangeText={setThreshold} keyboardType="numeric" placeholder="e.g., 350" />
             ) : null}
@@ -137,7 +191,7 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   title: { fontSize: 26, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
   sub: { fontSize: 13, color: colors.muted, marginTop: 2 },
-  addBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  addBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
 
   scroll: { padding: spacing.lg, paddingBottom: 100 },
   row: { flexDirection: "row", alignItems: "center", gap: spacing.md, backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.sm },
@@ -146,6 +200,11 @@ const styles = StyleSheet.create({
   rowDesc: { fontSize: 12, color: colors.muted, marginTop: 2 },
   removeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
 
+  feedHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
+  feedTitle: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
+  checkBtn: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, paddingHorizontal: spacing.md, borderRadius: radius.pill, backgroundColor: colors.brandSecondary },
+  checkText: { color: colors.brandPrimary, fontWeight: "700", fontSize: 12 },
+  feedRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, backgroundColor: colors.brandSecondary, borderRadius: radius.lg, padding: spacing.md, marginTop: spacing.sm },
   empty: { alignItems: "center", padding: spacing.xl, gap: spacing.sm },
   emptyText: { color: colors.onSurface, fontSize: 14, textAlign: "center", fontWeight: "600", lineHeight: 20 },
   emptySub: { color: colors.muted, fontSize: 12, textAlign: "center", lineHeight: 17 },
