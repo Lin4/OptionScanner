@@ -181,13 +181,16 @@ async def get_metrics(client: httpx.AsyncClient, ticker: str) -> Dict[str, Any]:
         "ev_to_revenue": m.get("evRevenueTTM"),
         "ev_to_ebitda": m.get("evEbitdaTTM"),
         "cash_per_share_q": m.get("cashPerSharePerShareQuarterly"),
+        "book_value_per_share_q": m.get("bookValuePerShareQuarterly"),
+        "debt_to_equity_q": m.get("totalDebt/totalEquityQuarterly"),
     }
     _cache_set(key, result)
     return result
 
 
 _FIN_CONCEPTS = {
-    "revenue": ["us-gaap_Revenues", "us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax",
+    "revenue": ["us-gaap_RevenuesNetOfInterestExpense",  # banks' total net revenue (non-banks don't report it)
+                "us-gaap_Revenues", "us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax",
                 "us-gaap_SalesRevenueNet", "us-gaap_RevenueFromContractWithCustomerIncludingAssessedTax"],
     "net_income": ["us-gaap_NetIncomeLoss", "us-gaap_ProfitLoss"],
     "operating_cash_flow": ["us-gaap_NetCashProvidedByUsedInOperatingActivities",
@@ -196,7 +199,11 @@ _FIN_CONCEPTS = {
     "cash": ["us-gaap_CashAndCashEquivalentsAtCarryingValue",
              "us-gaap_CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
     "total_liabilities": ["us-gaap_Liabilities"],
-    "equity": ["us-gaap_StockholdersEquity"],
+    "equity": ["us-gaap_StockholdersEquity",
+               "us-gaap_StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+    "debt_long": ["us-gaap_LongTermDebtNoncurrent", "us-gaap_LongTermDebt", "us-gaap_LongTermDebtAndCapitalLeaseObligations"],
+    "debt_current": ["us-gaap_LongTermDebtCurrent", "us-gaap_DebtCurrent"],
+    "debt_short": ["us-gaap_CommercialPaper", "us-gaap_ShortTermBorrowings"],
 }
 _FLOW_KEYS = ("revenue", "net_income", "operating_cash_flow", "capex")
 
@@ -230,6 +237,8 @@ async def get_quarterly_financials(client: httpx.AsyncClient, ticker: str, n: in
                 if isinstance(it.get("value"), (int, float)):
                     items.setdefault(it["concept"], it["value"])
         vals = {k: _pick(items, v) for k, v in _FIN_CONCEPTS.items()}
+        if vals["revenue"] is None and items.get("us-gaap_InterestIncomeExpenseNet") is not None and items.get("us-gaap_NoninterestIncome") is not None:
+            vals["revenue"] = float(items["us-gaap_InterestIncomeExpenseNet"]) + float(items["us-gaap_NoninterestIncome"])  # bank net revenue
         rows[(int(rep["year"]), q)] = {"end_date": (rep.get("endDate") or "")[:10], "ytd": vals}
     out = []
     for (y, q) in sorted(rows, reverse=True):
@@ -244,13 +253,21 @@ async def get_quarterly_financials(client: httpx.AsyncClient, ticker: str, n: in
             row[k] = (a - b) if a is not None and b is not None else None
         for k in ("cash", "total_liabilities", "equity"):
             row[k] = cur["ytd"].get(k)
+        parts = [cur["ytd"].get(k) for k in ("debt_long", "debt_current", "debt_short")]
+        row["total_debt"] = sum(p for p in parts if p is not None) if any(p is not None for p in parts) else None
+        row["debt_to_equity"] = round(row["total_debt"] / row["equity"], 2) if row["total_debt"] is not None and row["equity"] else None
         ocf, capex = row["operating_cash_flow"], row["capex"]
         row["free_cash_flow"] = (ocf - (capex or 0)) if ocf is not None else None
         row["net_margin_pct"] = round(row["net_income"] / row["revenue"] * 100, 1) if row["revenue"] and row["net_income"] is not None else None
         out.append(row)
-        if len(out) >= n:
+        if len(out) >= n + 1:
             break
     out.reverse()  # oldest -> newest for charts
+    for i, r in enumerate(out):  # quarter-over-quarter growth
+        p = out[i - 1] if i else None
+        for k in ("revenue", "net_income"):
+            r[f"{k}_growth_pct"] = round((r[k] / p[k] - 1) * 100, 1) if p and r.get(k) is not None and p.get(k) else None
+    out = out[-n:]
     _cache_set(key, out)
     return out
 

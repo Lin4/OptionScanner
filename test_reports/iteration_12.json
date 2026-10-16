@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 12 — Long-term Fundamentals, 8-quarter financials, Peer Comparison, and Balance Sheet. BACKEND 12/13 passed, 1 skipped (JPM — banks don't report standard us-gaap_Revenues; see action_items). All 9 valuation_measures keys present for every tested ticker; financials ordered oldest->newest, max 8 rows, labels 'Qn FYyy'; AAPL quarterly revenue in realistic $94B–$144B range (not cumulative). SPY/ETF returns empty financials/balance without error. Buy/Sell points populated when EPS>0. Peer /api/screener/peers for AAPL/MSFT/NVDA/KO all return target-first row + up to 3 peers with full 9-key valuation + verdict object + summary string. Unknown ticker returns 200 with empty rows (no 500). FRONTEND passed: Analyze → Long-term for AAPL shows all 9 valuation labels + Buy/Sell points, peer-comparison (9 rows + summary), financials-chart (3-quarter default; fin-range-8 switches to 8 columns with real values Q4'24..Q3'26 — $94.93B, $124.30B, $95.36B, $94.04B, $102.47B, $143.76B, $111.18B, $109.42B), fin-row-* for revenue/net_income/operating_cash_flow/free_cash_flow/revenue_growth_pct/net_income_growth_pct/cash/net_margin_pct, legend chips toggle, balance-sheet + balance-health visible. NO horizontal overflow at 390px in 8-quarter mode (scrollWidth = clientWidth = 390). SPY shows graceful empty states ('Quarterly filings aren\\'t available for this ticker.' and 'Balance sheet data isn\\'t available in recent filings for this ticker.'). MSFT confirmed. Deprecated packages detected: NONE. SafeAreaView issues detected: NONE. No React Native red screen.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/screener/stock-analysis (purpose='long') for JPM",
+        "issue": "JPM financials rows return but revenue=null for all 8 quarters because market.py _FIN_CONCEPTS['revenue'] only maps the non-financial us-gaap tags (Revenues, RevenueFromContractWithCustomer*, SalesRevenueNet). Banks like JPM report InterestAndDividendIncomeOperating + NoninterestIncome instead. Net margin % and revenue growth also stay null. Net income + OCF populate correctly. Impact: Financials table/chart on Analyze → Long-term renders only Net income / OCF / FCF for JPM (and likely BAC, WFC, C, GS, MS). Fix: extend _FIN_CONCEPTS['revenue'] with 'us-gaap_InterestAndDividendIncomeOperating' (sum of this + 'us-gaap_NoninterestIncome' is the standard bank total revenue proxy) or add a dedicated bank branch that composes revenue = InterestAndDividendIncomeOperating + NoninterestIncome. Reference: /app/backend/market.py:192-193."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_long_fundamentals.py",
+    "/app/test_reports/pytest/iteration12_long_results.xml"
+  ],
+  "action_items": [
+    "Extend /app/backend/market.py _FIN_CONCEPTS['revenue'] to include bank-style tags: 'us-gaap_InterestAndDividendIncomeOperating' (plus optionally add a composite 'noninterest_income' using 'us-gaap_NoninterestIncome' and sum them) so JPM and other financial-sector tickers report quarterly revenue, revenue_growth_pct and net_margin_pct. Verified today: Net income + OCF for JPM come through correctly; only revenue mapping is missing."
+  ],
+  "critical_code_review_comments": [
+    "market.py get_quarterly_financials de-cumulation logic is correct for non-financials: AAPL quarters show the expected $94B–$144B range with Q4'24=$124.3B and Q4'25=$143.76B. No YTD leak.",
+    "server.py stock_analysis long branch correctly fills cash_estimated / equity_estimated when the latest balance-sheet row is empty but market_cap + cash_per_share_q are available.",
+    "/api/screener/peers safely handles unknown tickers (returns 200 with rows=[]).",
+    "frontend financials.tsx FinancialsChart handles the wide=rows.length>4 case well — labels switch to Q4'24 style and bar widths shrink; no horizontal overflow at 390px."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_long_fundamentals.py (new pytest file)"
+  ],
+  "success_rate": {"backend": "92% (12/13 passed, 1 skipped=JPM revenue mapping gap)", "frontend": "100%"},
+  "seed_data_creation": "None — reused existing trader@optiscreen.app seed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "After main agent patches _FIN_CONCEPTS['revenue'] for banks (JPM), re-run only `pytest backend/tests/test_long_fundamentals.py::test_long_stock_analysis[JPM] -n 0` to confirm revenue now populates. Everything else (AAPL/MSFT/NVDA/KO/AMZN/TSLA/SPY long + peer comparison for AAPL/MSFT/NVDA/KO + unknown ticker) already passes and does not need re-testing. Frontend fully verified on mobile 390x844 for AAPL, SPY, MSFT.",
+  "rca_of_issue": "JPM revenue null RCA: Finnhub financials-reported for JPM uses the bank-specific XBRL concept 'us-gaap_InterestAndDividendIncomeOperating' (and 'us-gaap_NoninterestIncome') because banks don't recognize revenue the same way as product/service companies. market.py:192 _FIN_CONCEPTS['revenue'] only includes the generic retail/tech revenue tags, so _pick() returns None for JPM, net_margin_pct and revenue_growth_pct are also null, and the Fundamentals table shows '—' for Total revenue / Revenue growth / Net margin on bank tickers. Mitigation: add 'us-gaap_InterestAndDividendIncomeOperating' to the list (and ideally compose with 'us-gaap_NoninterestIncome' for an accurate bank-total-revenue proxy)."
+}

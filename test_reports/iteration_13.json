@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 13 — Bank revenue fix retest. BACKEND 13/14 passed (1 failed: WFC). Regression (9/9) and new bank test (4/5): JPM, BAC, GS report realistic quarterly revenue (JPM $42.65B→$57.35B, BAC $25.34B→$31.56B, GS $13.45B→$20.34B), with revenue_growth_pct and net_margin_pct populated across all 8 quarters. AAPL still $94B–$144B/qtr (de-cumulation intact). WFC FAILS: revenue resolves to $3.78B–$6.85B/qtr (should be ~$18–22B) because `_FIN_CONCEPTS['revenue']` lists `us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax` BEFORE `us-gaap_RevenuesNetOfInterestExpense`, and WFC reports BOTH tags — fee income ($6.5B) wins over total net revenue ($21.4B). FRONTEND (Analyze → Long-term → JPM) verified on 390×844: fin-row-revenue '$45.80B | $49.84B | $57.35B', fin-row-net_margin_pct '28.4% | 33.1% | 36.9%', fin-row-net_income '$13.03B | $16.49B | $21.16B', fin-row-revenue_growth_pct '-1.4% | +8.8% | +15.1%'. NO em-dashes. Deprecated packages detected: NONE. SafeAreaView issues detected: NONE. No red screen. Additional observation (out of scope): JPM operating_cash_flow and free_cash_flow show large negative values like -$211.76B for Q1 FY26 which looks implausible for a single quarter — may indicate a cash flow concept-mapping issue for banks (JPM 10-Q OCF is typically ±$50B range). Flagging for main agent but not blocking this iteration.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/screener/stock-analysis {ticker:'WFC', purpose:'long'}",
+        "issue": "Revenue resolves to fee income ($6.57B Q1'26) instead of total net revenue ($21.45B Q1'26). Root cause: in /app/backend/market.py:192-194, `_FIN_CONCEPTS['revenue']` lists `us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax` at index 1 and `us-gaap_RevenuesNetOfInterestExpense` at index 4. `_pick()` returns the first non-null match. WFC reports BOTH tags, so fee income wins. Fix: move `us-gaap_RevenuesNetOfInterestExpense` to the FRONT of the list (any filer that reports it is a bank/insurer and that tag IS their total revenue; non-bank filers don't report it, so order is safe). JPM/BAC/GS pass because they don't report RevenueFromContractWithCustomerExcludingAssessedTax at the quarterly level, so RevenuesNetOfInterestExpense wins by default.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/screener/stock-analysis {ticker:'JPM', purpose:'long'} — operating_cash_flow / free_cash_flow",
+        "issue": "JPM Q1 FY26 operating_cash_flow = -$211.76B and free_cash_flow = -$211.76B. Reasonable JPM quarterly OCF is ±$50B. Likely a bank-specific cash-flow concept-mapping gap similar to the revenue issue (banks' OCF includes huge gross securities-trading flows). Out of scope for this iteration but worth investigating next. Reference: /app/backend/market.py:196-198 _FIN_CONCEPTS['operating_cash_flow']."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_bank_revenue_fix.py",
+    "/app/backend/tests/test_long_fundamentals.py",
+    "/app/test_reports/pytest/iteration13_bank_results.xml",
+    "/app/test_reports/pytest/iteration13_regression_results.xml"
+  ],
+  "action_items": [
+    "In /app/backend/market.py line 192-194, reorder `_FIN_CONCEPTS['revenue']` so `us-gaap_RevenuesNetOfInterestExpense` is FIRST (or at least before `us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax`). This fixes WFC without affecting any non-bank ticker (confirmed via /tmp/wfc_debug.py — WFC Q1'26 YTD RevenuesNetOfInterestExpense=$21,446M vs the $6,577M fee-income tag the code currently picks). Re-run `pytest backend/tests/test_bank_revenue_fix.py` to confirm.",
+    "Optional follow-up: investigate JPM/BAC/WFC operating_cash_flow mapping — current values ($100B+ swings per quarter) suggest a bank-specific OCF tag is needed or filtering is missing."
+  ],
+  "critical_code_review_comments": [
+    "market.py _pick() uses first-match semantics on a priority list. For a mixed universe of banks + non-banks, bank-specific XBRL tags MUST be listed BEFORE generic tags, otherwise a bank that happens to also report a generic tag (fee income under RevenueFromContract…) will mis-resolve.",
+    "The composite fallback `revenue = InterestIncomeExpenseNet + NoninterestIncome` is sound and would also give WFC the correct ~$22B value — but it only runs when `_pick` returns None, and `_pick` returned a (wrong) non-null value for WFC, so the fallback never executed.",
+    "No `-m` filter or test discovery issue; both backend test files share conftest.py cleanly."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_bank_revenue_fix.py (new — bank revenue fix retest + AAPL regression)"
+  ],
+  "success_rate": {"backend": "93% (13/14 — WFC fails revenue mapping)", "frontend": "100% (JPM financials row renders real values, no em-dash)"},
+  "seed_data_creation": "None — reused trader@optiscreen.app seed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "After main agent reorders _FIN_CONCEPTS['revenue'] to put us-gaap_RevenuesNetOfInterestExpense first, re-run only `pytest backend/tests/test_bank_revenue_fix.py::test_bank_quarterly_revenue[WFC] -p no:cacheprovider` — plus optionally all 4 bank parametrizations. AAPL/MSFT/NVDA/KO/JPM/BAC/GS already green; peer comparison already green. Frontend JPM already verified fully (fin-row-revenue, net_margin_pct, net_income, revenue_growth_pct all populated, no em-dashes). Also consider testing WFC on the frontend after fix.",
+  "rca_of_issue": "WFC revenue mis-mapping RCA: Finnhub returns WFC's quarterly 10-Q filings with multiple revenue-like concepts. For Q1 FY26 (YTD, end 2026-03-31): us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax=$6,577M (labelled 'Fee income') AND us-gaap_RevenuesNetOfInterestExpense=$21,446M (labelled 'Total revenue'). market.py _FIN_CONCEPTS['revenue'] lists [Revenues, RevenueFromContract…ExcludingAssessedTax, SalesRevenueNet, RevenueFromContract…IncludingAssessedTax, RevenuesNetOfInterestExpense]. _pick() iterates in order and returns the first non-null, so for WFC it picks fee income $6,577M instead of total revenue $21,446M. The subtraction logic then produces quarterly fee-income-only values ($3.7B–$6.9B) and inflated net_margin_pct (>100%). Reproduction: python /tmp/wfc_api.py (prints Q3 FY24 rev=$3.78B with nm=135.3%). Mitigation: reorder the list so RevenuesNetOfInterestExpense is checked first — zero risk to non-bank tickers because they don't report that tag. JPM/BAC/GS escape this bug only because they don't report the fee-income tag at the quarterly level and so the generic entries all miss, falling through to the bank tag."
+}

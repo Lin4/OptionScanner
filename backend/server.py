@@ -32,7 +32,7 @@ from market import (
     UNIVERSE, UNIVERSE_INDEX, fetch_stock_bundle, get_quote, get_candles,
     sma as calc_sma, rsi as calc_rsi, support_resistance, detect_candle_patterns, detect_chart_patterns,
 )
-from market import get_earnings, get_metrics, get_quarterly_financials, _cache_get as market_cache_get
+from market import get_earnings, get_metrics, get_quarterly_financials, get_peers, _cache_get as market_cache_get
 import extras
 import billing
 from engine import (
@@ -682,13 +682,17 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
         pe = metrics.get("pe_ttm") or 0
         async with httpx.AsyncClient() as client:
             try:
-                financials = await get_quarterly_financials(client, tk, 3)
+                financials = await get_quarterly_financials(client, tk, 8)
             except Exception as ex:
                 logger.warning(f"financials {tk}: {ex}")
                 financials = []
         if financials and financials[-1].get("cash") is None and metrics.get("cash_per_share_q") and metrics.get("market_cap") and price:
             financials[-1]["cash"] = metrics["cash_per_share_q"] * metrics["market_cap"] / price
             financials[-1]["cash_estimated"] = True
+        if financials and financials[-1].get("equity") is None and metrics.get("book_value_per_share_q") and metrics.get("market_cap") and price:
+            last = financials[-1]
+            last["equity"] = metrics["book_value_per_share_q"] * metrics["market_cap"] / price
+            last["equity_estimated"] = True
         dcf_in = default_dcf_inputs(metrics)
         valuation = dcf_valuation(price, eps, dcf_in["growth"], dcf_in["discount_pct"], dcf_in["terminal_pe"], dcf_in["weights"])
         resp = {
@@ -733,6 +737,40 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
         resp["moat_note"] = ai.get("moat_note", "")
     resp["data_source"] = data_source_block()
     return {"result": resp}
+
+
+VALUATION_KEYS = ("market_cap", "enterprise_value", "trailing_pe", "forward_pe", "peg_ratio",
+                  "price_to_sales", "price_to_book", "ev_to_revenue", "ev_to_ebitda")
+
+
+@api_router.get("/screener/peers/{ticker}")
+async def peer_comparison(ticker: str, authorization: Optional[str] = Header(default=None)):
+    """Valuation measures for the ticker vs up to 3 industry peers (Finnhub peers)."""
+    await get_user_from_token(authorization)
+    tk = ticker.upper().strip()
+    hit = cache_get(f"peers:{tk}", 3600)
+    if hit:
+        return hit
+    async with httpx.AsyncClient() as client:
+        peers = (await get_peers(client, tk))[:3]
+        metrics = await asyncio.gather(*[get_metrics(client, t) for t in [tk] + peers], return_exceptions=True)
+    rows = []
+    for t, m in zip([tk] + peers, metrics):
+        if isinstance(m, dict) and any(m.get(k) is not None for k in VALUATION_KEYS):
+            rows.append({"ticker": t, "is_target": t == tk, **{k: m.get(k) for k in VALUATION_KEYS}})
+    verdict = {}
+    for k in VALUATION_KEYS[2:]:  # ratio measures: lower = cheaper
+        others = [r[k] for r in rows if not r["is_target"] and r.get(k) is not None and r[k] > 0]
+        mine = next((r[k] for r in rows if r["is_target"]), None)
+        if others and mine is not None and mine > 0:
+            med = sorted(others)[len(others) // 2]
+            verdict[k] = {"peer_median": round(med, 2), "cheaper": mine < med, "diff_pct": round((mine / med - 1) * 100, 1)}
+    cheaper = sum(1 for v in verdict.values() if v["cheaper"])
+    out = {"ticker": tk, "rows": rows, "verdict": verdict,
+           "summary": f"{tk} looks cheaper than its peers on {cheaper} of {len(verdict)} ratios" if verdict else "Not enough peer data",
+           "source": "Finnhub peers & basic financials"}
+    cache_set(f"peers:{tk}", out)
+    return out
 
 
 @api_router.post("/screener/valuation")

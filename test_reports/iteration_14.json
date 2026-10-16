@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 14 — WFC bank revenue mapping fix VERIFIED. market.py now lists us-gaap_RevenuesNetOfInterestExpense FIRST in _FIN_CONCEPTS['revenue'] (line 192). Backend: 5/5 pass in test_bank_revenue_fix.py (JPM, BAC, WFC, GS, AAPL regression) and 5/5 in test_long_fundamentals.py filtered to JPM/AAPL/MSFT (BAC & GS are not parameterised in long_fundamentals, they live in test_bank_revenue_fix). Direct API probe (POST /api/screener/stock-analysis WFC long) returns 8 quarters with revenue $20.15B–$22.62B and net_margin 24.3–28.3% — exactly in the expected $18–23B / <100% band. Frontend (390×844, trader@optiscreen.app, Analyze → Long-term → WFC): fin-row-revenue shows '$21.29B | $21.45B | $22.62B', fin-row-net_margin_pct shows '25.2% | 24.5% | 28.3%'. No em-dashes in the rendered financial rows. No red-screen errors. Deprecated packages detected: NONE. SafeAreaView issues detected: NONE. Note (carried from iteration 13, out of scope): JPM operating_cash_flow still shows large negative swings in some quarters (bank-specific OCF concept-mapping gap) — not blocking.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/screener/stock-analysis {ticker:'JPM', purpose:'long'} — operating_cash_flow",
+        "issue": "Carryover from iteration 13: bank operating_cash_flow still looks implausible for some quarters (±$100B+). Likely a bank-specific OCF concept mapping gap in /app/backend/market.py:196-198. Not blocking this iteration."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_bank_revenue_fix.py",
+    "/app/backend/tests/test_long_fundamentals.py",
+    "/app/test_reports/pytest/iteration14_bank_results.xml",
+    "/app/test_reports/pytest/iteration14_long_results.xml"
+  ],
+  "action_items": [
+    "Optional follow-up: investigate JPM/BAC/WFC operating_cash_flow concept mapping — likely needs a bank-specific tag ordering similar to the revenue fix (e.g., prefer us-gaap_NetCashProvidedByUsedInOperatingActivitiesContinuingOperations or filter non-cash trading inventory tags)."
+  ],
+  "critical_code_review_comments": [
+    "Fix in market.py:192 correctly places us-gaap_RevenuesNetOfInterestExpense first; non-bank filers don't report this tag so order is safe for AAPL/MSFT/NVDA (verified via regression)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (10/10 across bank + long parametrized tests)", "frontend": "100% (WFC fin-row-revenue and fin-row-net_margin_pct render correct values, no em-dashes)"},
+  "seed_data_creation": "None — reused trader@optiscreen.app seed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "WFC revenue fix is fully green on backend + frontend. The remaining known issue is bank operating_cash_flow mapping (JPM shows large negative swings), tracked as minor. All AAPL/MSFT/JPM/BAC/GS/WFC long-term stock-analysis flows return realistic quarterly revenue and net_margin values. If retesting banks, remember pytest.ini forces -n 2 loadscope — use `-n 0` to serialize when hitting Finnhub 60/min.",
+  "rca_of_issue": "The iteration 13 RCA identified that _pick() in market.py returned the first non-null XBRL concept, and WFC reports both us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax (fee income, $6.5B) and us-gaap_RevenuesNetOfInterestExpense (total net revenue, $21.4B). The fix in iteration 14 reorders _FIN_CONCEPTS['revenue'] so RevenuesNetOfInterestExpense is tried first. This is a safe reorder because non-bank filers do not report RevenuesNetOfInterestExpense (so for AAPL/MSFT/etc the generic tags still win), while banks (JPM/BAC/WFC/GS) now correctly map to total revenue. Verified: WFC Q1'26 revenue = $21.446B (matches the SEC 10-Q), net_margin = 24.5% (normal). AAPL Q4 FY25 revenue still ~$102B (unchanged). All assertions in test_bank_revenue_fix.py and test_long_fundamentals.py pass."
+}

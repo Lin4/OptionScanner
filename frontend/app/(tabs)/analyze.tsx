@@ -14,7 +14,7 @@ import { useTTS, useSTT } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate, usePlan } from "@/src/plans";
 import { ACCOUNTS, Chips, Label, OptionInsights, accountLabel } from "@/src/screen";
-import { FinancialsChart, ValuationMeasures } from "@/src/financials";
+import { FinancialsChart, ValuationMeasures, PeerComparison, BalanceSheet } from "@/src/financials";
 
 const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Sell Put", "Sell Call", "Short Strangle"];
 
@@ -500,8 +500,12 @@ function LongForm({ r }: { r: any }) {
       {r.roe != null ? <MetricRow label="ROE" value={`${Number(r.roe).toFixed(1)}%`} /> : null}
       {r.revenue_growth_pct != null ? <MetricRow label="Rev growth" value={`${Number(r.revenue_growth_pct).toFixed(1)}%`} /> : null}
       {r.beta != null ? <MetricRow label="Beta" value={Number(r.beta).toFixed(2)} /> : null}
-      <Text style={styles.sectionLabel}>Financials · last 3 quarters</Text>
+      <Text style={styles.sectionLabel}>Peer comparison</Text>
+      <PeerComparison ticker={r.ticker} />
+      <Text style={styles.sectionLabel}>Financials · quarterly</Text>
       <FinancialsChart rows={r.financials || []} source={r.financials_source} />
+      <Text style={styles.sectionLabel}>Balance sheet · debt vs equity</Text>
+      <BalanceSheet rows={r.financials || []} />
       <Text style={styles.sectionLabel}>Earnings</Text>
       <MetricRow label="Next date" value={r.earnings_date || "TBA"} />
       {r.earnings_eps_estimate != null ? <MetricRow label="EPS estimate" value={`$${Number(r.earnings_eps_estimate).toFixed(2)}`} /> : null}
