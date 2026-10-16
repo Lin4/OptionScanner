@@ -14,6 +14,7 @@ import { useTTS, useSTT } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate, usePlan } from "@/src/plans";
 import { ACCOUNTS, Chips, Label, OptionInsights, accountLabel } from "@/src/screen";
+import { FinancialsChart, ValuationMeasures } from "@/src/financials";
 
 const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Sell Put", "Sell Call", "Short Strangle"];
 
@@ -493,12 +494,14 @@ function LongForm({ r }: { r: any }) {
       </View>
       <ValuationEditor r={r} />
       <Text style={styles.sectionLabel}>Fundamentals</Text>
+      <ValuationMeasures m={r.valuation_measures || {}} buy={r.buy_point} sell={r.sell_point} />
       <MetricRow label="Analyst target (avg)" value={r.price_target ? `$${r.price_target}` : "—"} color={colors.success} />
-      {r.pe_ratio != null ? <MetricRow label="P/E (TTM)" value={Number(r.pe_ratio).toFixed(2)} /> : null}
       {r.eps_ttm != null ? <MetricRow label="EPS (TTM)" value={`$${Number(r.eps_ttm).toFixed(2)}`} /> : null}
       {r.roe != null ? <MetricRow label="ROE" value={`${Number(r.roe).toFixed(1)}%`} /> : null}
       {r.revenue_growth_pct != null ? <MetricRow label="Rev growth" value={`${Number(r.revenue_growth_pct).toFixed(1)}%`} /> : null}
       {r.beta != null ? <MetricRow label="Beta" value={Number(r.beta).toFixed(2)} /> : null}
+      <Text style={styles.sectionLabel}>Financials · last 3 quarters</Text>
+      <FinancialsChart rows={r.financials || []} source={r.financials_source} />
       <Text style={styles.sectionLabel}>Earnings</Text>
       <MetricRow label="Next date" value={r.earnings_date || "TBA"} />
       {r.earnings_eps_estimate != null ? <MetricRow label="EPS estimate" value={`$${Number(r.earnings_eps_estimate).toFixed(2)}`} /> : null}

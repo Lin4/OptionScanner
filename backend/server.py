@@ -32,7 +32,7 @@ from market import (
     UNIVERSE, UNIVERSE_INDEX, fetch_stock_bundle, get_quote, get_candles,
     sma as calc_sma, rsi as calc_rsi, support_resistance, detect_candle_patterns, detect_chart_patterns,
 )
-from market import get_earnings, get_metrics, _cache_get as market_cache_get
+from market import get_earnings, get_metrics, get_quarterly_financials, _cache_get as market_cache_get
 import extras
 import billing
 from engine import (
@@ -680,6 +680,15 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
         pt = bundle.get("price_target")
         eps = metrics.get("eps_ttm") or 0
         pe = metrics.get("pe_ttm") or 0
+        async with httpx.AsyncClient() as client:
+            try:
+                financials = await get_quarterly_financials(client, tk, 3)
+            except Exception as ex:
+                logger.warning(f"financials {tk}: {ex}")
+                financials = []
+        if financials and financials[-1].get("cash") is None and metrics.get("cash_per_share_q") and metrics.get("market_cap") and price:
+            financials[-1]["cash"] = metrics["cash_per_share_q"] * metrics["market_cap"] / price
+            financials[-1]["cash_estimated"] = True
         dcf_in = default_dcf_inputs(metrics)
         valuation = dcf_valuation(price, eps, dcf_in["growth"], dcf_in["discount_pct"], dcf_in["terminal_pe"], dcf_in["weights"])
         resp = {
@@ -695,6 +704,11 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
             "business_moat": "Wide" if (metrics.get("roe_ttm") or 0) > 20 else ("Narrow" if (metrics.get("roe_ttm") or 0) > 10 else "None"),
             "competitors": bundle["peers"][:4],
             "analyst_ratings": bundle["analyst_ratings"] or {"buy": 0, "hold": 0, "sell": 0},
+            "valuation_measures": {k: metrics.get(k) for k in (
+                "market_cap", "enterprise_value", "trailing_pe", "forward_pe", "peg_ratio",
+                "price_to_sales", "price_to_book", "ev_to_revenue", "ev_to_ebitda")},
+            "financials": financials,
+            "financials_source": "SEC 10-Q/10-K filings via Finnhub (quarterly values derived from year-to-date figures)",
             "buy_point": valuation["buy_zone_below"] if valuation else None,
             "sell_point": valuation["sell_zone_above"] if valuation else None,
         }

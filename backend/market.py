@@ -170,9 +170,89 @@ async def get_metrics(client: httpx.AsyncClient, ticker: str) -> Dict[str, Any]:
         "net_profit_margin": m.get("netProfitMarginTTM"),
         "roe_ttm": m.get("roeTTM"),
         "debt_to_equity": m.get("totalDebt/totalEquityAnnual"),
+        # valuation measures (Finnhub reports market cap / EV in $ millions)
+        "market_cap": m["marketCapitalization"] * 1e6 if m.get("marketCapitalization") else None,
+        "enterprise_value": m["enterpriseValue"] * 1e6 if m.get("enterpriseValue") else None,
+        "trailing_pe": m.get("peTTM") or m.get("peBasicExclExtraTTM"),
+        "forward_pe": m.get("forwardPE"),
+        "peg_ratio": m.get("forwardPEG") or m.get("pegTTM"),
+        "price_to_sales": m.get("psTTM"),
+        "price_to_book": m.get("pbQuarterly") or m.get("pb"),
+        "ev_to_revenue": m.get("evRevenueTTM"),
+        "ev_to_ebitda": m.get("evEbitdaTTM"),
+        "cash_per_share_q": m.get("cashPerSharePerShareQuarterly"),
     }
     _cache_set(key, result)
     return result
+
+
+_FIN_CONCEPTS = {
+    "revenue": ["us-gaap_Revenues", "us-gaap_RevenueFromContractWithCustomerExcludingAssessedTax",
+                "us-gaap_SalesRevenueNet", "us-gaap_RevenueFromContractWithCustomerIncludingAssessedTax"],
+    "net_income": ["us-gaap_NetIncomeLoss", "us-gaap_ProfitLoss"],
+    "operating_cash_flow": ["us-gaap_NetCashProvidedByUsedInOperatingActivities",
+                            "us-gaap_NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
+    "capex": ["us-gaap_PaymentsToAcquirePropertyPlantAndEquipment", "us-gaap_PaymentsToAcquireProductiveAssets"],
+    "cash": ["us-gaap_CashAndCashEquivalentsAtCarryingValue",
+             "us-gaap_CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
+    "total_liabilities": ["us-gaap_Liabilities"],
+    "equity": ["us-gaap_StockholdersEquity"],
+}
+_FLOW_KEYS = ("revenue", "net_income", "operating_cash_flow", "capex")
+
+
+def _pick(items: Dict[str, float], names: List[str]) -> Optional[float]:
+    for n in names:
+        if items.get(n) is not None:
+            return float(items[n])
+    return None
+
+
+async def get_quarterly_financials(client: httpx.AsyncClient, ticker: str, n: int = 3) -> List[Dict[str, Any]]:
+    """Last n fiscal quarters from SEC filings (Finnhub as-reported). 10-Q flow items are
+    year-to-date, so each quarter = YTD(q) - YTD(q-1); Q4 = annual 10-K - Q3 YTD."""
+    key = f"fin:{ticker}:{n}"
+    hit = _cache_get(key, 43200.0)
+    if hit is not None:
+        return hit
+    data = await _get(client, "https://finnhub.io/api/v1/stock/financials-reported",
+                      {"symbol": ticker, "freq": "quarterly", "token": FINNHUB_KEY}) or {}
+    annual = await _get(client, "https://finnhub.io/api/v1/stock/financials-reported",
+                        {"symbol": ticker, "freq": "annual", "token": FINNHUB_KEY}) or {}
+    rows: Dict[tuple, Dict[str, Any]] = {}
+    for rep, is_annual in [(r, False) for r in data.get("data") or []] + [(r, True) for r in (annual.get("data") or [])[:2]]:
+        q = 4 if is_annual else int(rep.get("quarter") or 0)
+        if not q:
+            continue
+        items: Dict[str, float] = {}
+        for sec in ("ic", "cf", "bs"):
+            for it in (rep.get("report") or {}).get(sec) or []:
+                if isinstance(it.get("value"), (int, float)):
+                    items.setdefault(it["concept"], it["value"])
+        vals = {k: _pick(items, v) for k, v in _FIN_CONCEPTS.items()}
+        rows[(int(rep["year"]), q)] = {"end_date": (rep.get("endDate") or "")[:10], "ytd": vals}
+    out = []
+    for (y, q) in sorted(rows, reverse=True):
+        cur = rows[(y, q)]
+        prev = rows.get((y, q - 1)) if q > 1 else None
+        if q > 1 and not prev:
+            continue  # can't de-cumulate without the prior quarter
+        row: Dict[str, Any] = {"label": f"Q{q} FY{str(y)[-2:]}", "fiscal_year": y, "fiscal_quarter": q, "end_date": cur["end_date"]}
+        for k in _FLOW_KEYS:
+            a = cur["ytd"].get(k)
+            b = prev["ytd"].get(k) if prev else 0.0
+            row[k] = (a - b) if a is not None and b is not None else None
+        for k in ("cash", "total_liabilities", "equity"):
+            row[k] = cur["ytd"].get(k)
+        ocf, capex = row["operating_cash_flow"], row["capex"]
+        row["free_cash_flow"] = (ocf - (capex or 0)) if ocf is not None else None
+        row["net_margin_pct"] = round(row["net_income"] / row["revenue"] * 100, 1) if row["revenue"] and row["net_income"] is not None else None
+        out.append(row)
+        if len(out) >= n:
+            break
+    out.reverse()  # oldest -> newest for charts
+    _cache_set(key, out)
+    return out
 
 
 async def get_earnings(client: httpx.AsyncClient, ticker: str) -> Dict[str, Any]:
