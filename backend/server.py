@@ -16,8 +16,8 @@ import bcrypt
 import jwt as pyjwt
 import httpx
 from pathlib import Path
-from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, EmailStr, Field, model_validator
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime, timedelta, timezone
 
 ROOT_DIR = Path(__file__).parent
@@ -139,9 +139,15 @@ class WatchlistAddReq(BaseModel):
 
 class AlertAddReq(BaseModel):
     ticker: str = Field(min_length=1, max_length=10)
-    kind: str  # price_above | price_below | earnings
-    threshold: Optional[float] = Field(default=None, gt=0, le=1e7)  # for price alerts
-    note: Optional[str] = None
+    kind: Literal["price_above", "price_below", "earnings", "smart_setup"]
+    threshold: Optional[float] = Field(default=None, gt=0, le=1e7, allow_inf_nan=False)  # for price alerts
+    note: Optional[str] = Field(default=None, max_length=280)
+
+    @model_validator(mode="after")
+    def _check_threshold(self):
+        if self.kind in ("price_above", "price_below") and self.threshold is None:
+            raise ValueError("Price alerts need a positive numeric threshold")
+        return self
 
 
 # ========== UTIL ==========
@@ -850,10 +856,6 @@ async def watchlist_list(authorization: Optional[str] = Header(default=None)):
 @api_router.post("/alerts/add")
 async def alerts_add(req: AlertAddReq, authorization: Optional[str] = Header(default=None)):
     user = await get_user_from_token(authorization)
-    if req.kind not in ("price_above", "price_below", "earnings", "smart_setup"):
-        raise HTTPException(status_code=400, detail="Invalid alert kind")
-    if req.kind in ("price_above", "price_below") and req.threshold is None:
-        raise HTTPException(status_code=400, detail="Price alerts need a positive threshold")
     alert = {
         "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
         "user_id": user["user_id"],

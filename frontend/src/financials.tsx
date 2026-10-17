@@ -192,6 +192,12 @@ const s = StyleSheet.create({
   rangeTrack: { height: 12, borderRadius: 6, backgroundColor: colors.surfaceTertiary, position: "relative" },
   rangeFill: { position: "absolute", top: 0, bottom: 0, borderRadius: 6, backgroundColor: colors.brandPrimary, opacity: 0.3 },
   rangeMark: { position: "absolute", top: -3, width: 4, height: 18, borderRadius: 2, marginLeft: -2 },
+  methodRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 6 },
+  methodName: { fontSize: 13, fontWeight: "700", color: colors.onSurface },
+  wTrack: { height: 4, borderRadius: 2, backgroundColor: colors.surfaceTertiary, marginTop: 4 },
+  wFill: { height: 4, borderRadius: 2, backgroundColor: colors.brandPrimary },
+  methodVal: { fontSize: 14, fontWeight: "800", color: colors.onSurface, fontVariant: ["tabular-nums"], minWidth: 70, textAlign: "right" },
+  methodW: { fontSize: 11, fontWeight: "700", color: colors.muted, width: 36, textAlign: "right" },
   iqToggle: { minHeight: 44, justifyContent: "center", alignItems: "center" },
   iqToggleText: { color: colors.brandPrimary, fontWeight: "800", fontSize: 13 },
   toggle: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginBottom: spacing.sm },
@@ -251,22 +257,31 @@ export function OptiIQCard({ o }: { o: any }) {
       </View>
       <Text style={s.iqSmall}>${lo} – ${hi} (±{Math.round(o.stress.spread_pct / 2)}%) · teal = OptiIQ, dark = price</Text>
 
-      <MetricRow label={`DCF (free cash flow) · ${o.weights.dcf ?? 0}%`} value={o.dcf.value != null ? `$${o.dcf.value}` : "n/a"} />
-      <MetricRow label={`Residual income · ${o.weights.residual_income ?? 0}%`} value={o.residual_income.value != null ? `$${o.residual_income.value}` : "n/a"} />
-      {o.models_gap_pct != null ? <MetricRow label="Gap between models" value={`${o.models_gap_pct}%`} /> : null}
-      {o.sanity ? <MetricRow label="Multiples sanity (P/E 15–25×)" value={`${o.sanity.implied_pe}× · ${o.sanity.status}`} color={o.sanity.status === "within" ? colors.success : colors.warning} /> : null}
+      <Text style={s.iqSection}>Valuation methods</Text>
+      {(o.methods || []).map((m: any) => (
+        <View key={m.key} testID={`optiiq-method-${m.key}`} style={s.methodRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.methodName}>{m.name}</Text>
+            <View style={s.wTrack}><View style={[s.wFill, { width: `${m.weight_pct}%` as any }]} /></View>
+          </View>
+          <Text style={[s.methodVal, !m.applicable && { color: colors.muted }]}>{m.applicable ? `$${m.value}` : "skipped"}</Text>
+          <Text style={s.methodW}>{m.weight_pct}%</Text>
+        </View>
+      ))}
+      {(o.weight_reasons || []).map((t: string) => <Text key={t} style={s.iqSmall}>• {t}</Text>)}
+      {o.models_gap_pct != null ? <MetricRow label="Spread between methods" value={`${o.models_gap_pct}%`} /> : null}
 
       <Pressable testID="optiiq-details" onPress={() => setOpen((v) => !v)} style={s.iqToggle}>
         <Text style={s.iqToggleText}>{open ? "Hide" : "Show"} assumptions & stress test</Text>
       </Pressable>
       {open ? (
         <View testID="optiiq-breakdown">
-          <MetricRow label="FCF (annualized TTM)" value={big(o.dcf.fcf_ttm)} />
-          <MetricRow label="Growth → terminal" value={`${o.dcf.growth_pct}% → ${o.dcf.terminal_growth_pct}%`} />
-          <MetricRow label="Discount rate (CAPM)" value={`${o.dcf.discount_pct}%`} />
-          <MetricRow label="Net cash" value={big(o.dcf.net_cash)} />
-          <MetricRow label="Book value / share" value={o.residual_income.book_value_ps != null ? `$${o.residual_income.book_value_ps}` : "—"} />
-          <MetricRow label="ROE (fades to cost of equity)" value={`${o.residual_income.roe_pct}% · ${o.residual_income.fade_years}y`} />
+          <MetricRow label="Required return (CAPM)" value={`${o.assumptions.required_return_pct}%`} />
+          <MetricRow label="Growth → terminal" value={`${o.assumptions.growth_pct}% → ${o.assumptions.terminal_growth_pct}%`} />
+          <MetricRow label="FCF (annualized TTM)" value={big(o.assumptions.fcf_ttm)} />
+          <MetricRow label="Net cash" value={big(o.assumptions.net_cash)} />
+          <MetricRow label="Dividend / share · payout" value={`$${o.assumptions.dividend_ps ?? 0} · ${o.assumptions.payout_pct}%`} />
+          <MetricRow label="EPS (TTM) × fair P/E" value={`$${o.assumptions.eps_ttm ?? "—"} × ${o.assumptions.fair_pe}`} />
           {o.stress.factors.map((f: any) => (
             <MetricRow key={f.name} label={f.name} value={`$${f.low ?? "—"} – $${f.high ?? "—"}`} />
           ))}

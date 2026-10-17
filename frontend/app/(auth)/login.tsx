@@ -63,7 +63,13 @@ export default function Login() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Welcome back</Text>
+            <Text style={styles.cardTitle}>Sign in to OptiScreen</Text>
+            <View style={styles.hint} testID="login-brand-hint">
+              <Icon name="info" size={14} color={colors.brandPrimary} />
+              <Text style={styles.hintText}>
+                Use your OptiScreen account — this is not your Expo account.
+              </Text>
+            </View>
             <Input testID="login-email" label="Email" value={email} onChangeText={setEmail} placeholder="you@example.com" keyboardType="email-address" />
             <Input testID="login-password" label="Password" value={password} onChangeText={setPassword} placeholder="••••••••" secureTextEntry />
             <Button testID="login-submit" label="Sign in" onPress={onLogin} loading={loading} />
@@ -109,7 +115,13 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
     borderWidth: 1, borderColor: colors.border,
   },
-  cardTitle: { fontSize: 20, fontWeight: "700", color: colors.onSurface, marginBottom: spacing.lg },
+  cardTitle: { fontSize: 20, fontWeight: "700", color: colors.onSurface, marginBottom: spacing.md },
+  hint: {
+    flexDirection: "row", alignItems: "center", gap: spacing.sm,
+    padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.surface, marginBottom: spacing.lg,
+  },
+  hintText: { flex: 1, fontSize: 12, color: colors.muted, lineHeight: 17 },
   dividerRow: { flexDirection: "row", alignItems: "center", marginVertical: spacing.lg },
   divider: { flex: 1, height: 1, backgroundColor: colors.border },
   or: { marginHorizontal: spacing.md, color: colors.muted, fontSize: 12 },

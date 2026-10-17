@@ -1,0 +1,28 @@
+{
+  "summary": "Iteration 16 — OptiIQ Value reworked to smart-weighted DCF + DDM + Earnings blend. Backend 10/10 pytest cases pass (AAPL/NVDA/KO/DUK schema+blend math, AAPL/NVDA DDM skipped for tiny dividends, KO/DUK DDM applicable, JPM DCF skipped bank path, SPY graceful null). Frontend verified on mobile viewport (390x844): login (trader@optiscreen.app) → Analyze tab → lab-long → KO renders optiiq-card with optiiq-value ($95.11), optiiq-confidence ('Low confidence'), optiiq-method-dcf / -ddm / -earnings rows each with values, weight bars and % (42/33/25 ≈ 100). Weight reasons bullets rendered ('Stable, positive free cash flow → DCF weighted most' + 'Steady dividend payer → DDM weighted up'). optiiq-details toggle expands optiiq-breakdown with Required return (CAPM), Growth → terminal, FCF, Net cash, Dividend/payout, EPS × fair P/E and the 3 stress factors (Growth ±3pp, Required return ±1pp, Margins/earnings ±15%). AAPL correctly renders the DDM row with 'skipped' at 0%. No deprecated expo packages or React Native issues detected.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_optiiq_value.py",
+    "/app/test_reports/pytest/iteration16_optiiq_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "engine.py optiiq_value: smart weights adapt correctly (stable_cf → DCF, steady_div → DDM, earnings fills). ddm_ok guard (yield≥1% AND payout≥20%) matches spec. Fair P/E = clamp(8.5 + 2g, 10, 30) is verified via live API against assumptions.growth_pct. No 'residual_income' key leaks into the payload.",
+    "frontend/src/financials.tsx OptiIQCard: handles 'skipped' label when !applicable (muted color), renders 3 stress factors from o.stress.factors, and shows weight reasons as bullets. optiiq-method-<key> testIDs are stable per method."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_optiiq_value.py (rewrote for new schema: 3-method blend, no residual_income)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (KO + AAPL flows verified)"},
+  "seed_data_creation": "None — used existing trader@optiscreen.app seed account.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "OptiIQ Value response is at result.optiiq. New schema: methods=[{key:dcf|ddm|earnings, name, value, weight_pct, applicable}], weight_reasons[], confidence, models_gap_pct, assumptions{required_return_pct, growth_pct, terminal_growth_pct, fcf_ttm, net_cash, dividend_ps, payout_pct, eps_ttm, fair_pe}, stress{low,high,spread_pct,fragility,factors[3]}. Applicable-method weights sum to ~100 (±2 due to rounding). Blend value ≈ Σ value*weight within 3% tolerance (per-method weight rounding adds slack). AAPL/NVDA DDM applicable=false (yield<1% or payout<20%). JPM DCF applicable=false (banks). SPY optiiq=null. fair_pe is clamp(8.5+2*growth_pct, 10, 30). Live Finnhub 60rpm — test file sleeps 1.3s per request and runs with -o addopts='' (pytest.ini uses -n auto by default).",
+  "rca_of_issue": "N/A — feature validation iteration, no bugs found. Previous residual_income schema fully replaced by smart-weighted 3-method blend as specified."
+}

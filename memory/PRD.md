@@ -93,3 +93,7 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 
 ## Testing
 - 21/21 backend tests pass (/app/backend/tests/test_pivot_features.py).
+
+## Update (Jun 2026)
+- Alerts: AlertAddReq now validates kind (Literal), threshold (>0, <=1e7, no NaN/inf), and requires threshold for price alerts -> 422 on bad payloads.
+- Login: retitled 'Sign in to OptiScreen' + hint that it's not the Expo account.

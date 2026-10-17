@@ -665,105 +665,116 @@ def _fcf_dcf(fcf0: float, g: float, r: float, tg: float, years: int = 5) -> floa
     return pv + tv / (1 + r) ** years
 
 
-def _residual_income(bv0: float, roe: float, r: float, payout: float, years: int = 10) -> float:
-    """RI model: ROE fades linearly to the cost of equity over `years`, so no terminal growth assumption."""
-    val, bv = bv0, bv0
+def _discounted_earnings(eps0: float, g: float, r: float, tg: float, years: int = 5) -> float:
+    pv, e = 0.0, eps0
     for t in range(1, years + 1):
-        roe_t = roe + (r - roe) * t / years
-        eps = roe_t * bv
-        val += (roe_t - r) * bv / (1 + r) ** t
-        bv += eps * (1 - payout)
-    return val
+        e *= 1 + g + (tg - g) * (t - 1) / max(years - 1, 1)
+        pv += e / (1 + r) ** t
+    return pv + e * (1 + tg) / max(r - tg, 0.01) / (1 + r) ** years
 
 
 def optiiq_value(price: float, metrics: Dict[str, Any], financials: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """OptiIQ Value = 60% FCF-DCF + 40% residual income, sanity-checked by multiples, stress-tested."""
+    """OptiIQ Value = smart-weighted blend of DCF, Dividend Discount Model and earnings-based valuation, stress-tested."""
     mc = metrics.get("market_cap")
     if not price or not mc:
         return None
     shares = mc / price
     beta = metrics.get("beta") or 1.0
-    r = min(max(RISK_FREE + max(min(beta, 2.5), 0.5) * 0.055, 0.07), 0.13)  # CAPM cost of equity
+    r = min(max(RISK_FREE + max(min(beta, 2.5), 0.5) * 0.055, 0.07), 0.13)  # CAPM required return
     tg = 0.025
     g_raw = metrics.get("revenue_growth_ttm")
     g = min(max((g_raw if g_raw is not None else 6.0) / 100, -0.05), 0.20)
 
-    last4 = [q.get("free_cash_flow") for q in (financials or [])[-4:] if q.get("free_cash_flow") is not None]
-    fcf0 = sum(last4) * 4 / len(last4) if last4 else None
+    fcfs = [q.get("free_cash_flow") for q in (financials or [])[-4:] if q.get("free_cash_flow") is not None]
+    fcf0 = sum(fcfs) * 4 / len(fcfs) if fcfs else None
     latest = (financials or [{}])[-1] if financials else {}
-    cash = latest.get("cash") or 0.0
-    debt = latest.get("total_debt") or 0.0
-
-    def dcf_ps(g_, r_, m_):
-        if not fcf0 or fcf0 <= 0:
-            return None
-        return (_fcf_dcf(fcf0 * m_, g_, r_, tg) + cash - debt) / shares
-
-    roe = (metrics.get("roe_ttm") or 0) / 100
-    bv0 = metrics.get("book_value_per_share_q")
+    net_cash = (latest.get("cash") or 0.0) - (latest.get("total_debt") or 0.0)
     eps = metrics.get("eps_ttm")
     dy = (metrics.get("dividend_yield") or 0) / 100
-    payout = min(max((dy * price / eps) if eps and eps > 0 else 0.3, 0.0), 0.9)
+    d0 = dy * price
+    roe = (metrics.get("roe_ttm") or 0) / 100
+    payout = (d0 / eps) if eps and eps > 0 and d0 > 0 else 0.0
 
-    def ri_ps(r_, m_):
-        if not bv0 or bv0 <= 0 or roe <= 0:
+    # Company-type signals for smart weighting
+    mean_f = sum(fcfs) / len(fcfs) if fcfs else 0
+    cv = (math.sqrt(sum((x - mean_f) ** 2 for x in fcfs) / len(fcfs)) / abs(mean_f)) if fcfs and mean_f else 9
+    stable_cf = len(fcfs) >= 3 and all(x > 0 for x in fcfs) and cv < 0.5
+    steady_div = dy >= 0.02 and 0.2 <= payout <= 0.95
+    fair_pe = min(max(8.5 + 2 * g * 100, 10), 30)  # Graham growth-adjusted P/E
+
+    def m_dcf(g_, r_, m_):
+        if not fcf0 or fcf0 <= 0:
             return None
-        return _residual_income(bv0, roe * m_, r_, payout)
+        return (_fcf_dcf(fcf0 * m_, g_, r_, tg) + net_cash) / shares
 
-    dcf = dcf_ps(g, r, 1.0)
-    ri = ri_ps(r, 1.0)
-    if dcf is None and ri is None:
+    ddm_ok = dy >= 0.01 and payout >= 0.2  # token dividends don't drive value
+
+    def m_ddm(g_, r_, m_):
+        if not ddm_ok:
+            return None
+        sustainable = roe * (1 - min(payout, 1)) if roe > 0 else g_
+        gd = min(max(min(sustainable, g_ if g_ > 0 else sustainable), 0.0), 0.06, r_ - 0.02)
+        return d0 * (1 + gd) / (r_ - gd)
+
+    def m_earn(g_, r_, m_):
+        if not eps or eps <= 0:
+            return None
+        e = eps * m_
+        pe = min(max(8.5 + 2 * g_ * 100, 10), 30)
+        return 0.5 * _discounted_earnings(e, g_, r_, tg) + 0.5 * e * pe
+
+    base_w = {"dcf": 0.5 if stable_cf else 0.2, "ddm": 0.4 if steady_div else 0.1, "earnings": 0.3 if stable_cf else 0.5}
+    fns = {"dcf": m_dcf, "ddm": m_ddm, "earnings": m_earn}
+
+    def blend(g_=g, r_=r, m_=1.0):
+        vals = {k: f(g_, r_, m_) for k, f in fns.items()}
+        vals = {k: v for k, v in vals.items() if v is not None and v > 0}
+        if not vals:
+            return None, {}, {}
+        tw = sum(base_w[k] for k in vals)
+        w = {k: base_w[k] / tw for k in vals}
+        return sum(vals[k] * w[k] for k in vals), vals, w
+
+    value, vals, w = blend()
+    if value is None:
         return None
-    if dcf is not None and ri is not None:
-        value, weights = 0.6 * dcf + 0.4 * ri, {"dcf": 60, "residual_income": 40}
-        gap = abs(dcf - ri) / max(min(abs(dcf), abs(ri)), 0.01) * 100
-    else:
-        value, weights, gap = (dcf if dcf is not None else ri), ({"dcf": 100} if dcf is not None else {"residual_income": 100}), None
 
-    # Stress test: growth ±3pp, discount ±1pp, margins/FCF ±15%
-    def blended(g_=g, r_=r, m_=1.0):
-        a, b = dcf_ps(g_, r_, m_), ri_ps(r_, m_)
-        if a is not None and b is not None:
-            return 0.6 * a + 0.4 * b
-        return a if a is not None else b
-
-    factors = [("Growth ±3pp", blended(g_=g - 0.03), blended(g_=g + 0.03)),
-               ("Discount rate ±1pp", blended(r_=r + 0.01), blended(r_=r - 0.01)),
-               ("Margins / FCF ±15%", blended(m_=0.85), blended(m_=1.15))]
-    combos = [blended(g + dg, r + dr, 1 + dm) for dg in (-0.03, 0, 0.03) for dr in (-0.01, 0, 0.01) for dm in (-0.15, 0, 0.15)]
+    factors = [("Growth ±3pp", blend(g_=g - 0.03)[0], blend(g_=g + 0.03)[0]),
+               ("Required return ±1pp", blend(r_=r + 0.01)[0], blend(r_=r - 0.01)[0]),
+               ("Margins / earnings ±15%", blend(m_=0.85)[0], blend(m_=1.15)[0])]
+    combos = [blend(g + dg, r + dr, 1 + dm)[0] for dg in (-0.03, 0, 0.03) for dr in (-0.01, 0, 0.01) for dm in (-0.15, 0, 0.15)]
     combos = [c for c in combos if c is not None]
     lo, hi = min(combos), max(combos)
     spread = (hi - lo) / max(abs(value), 0.01) * 100
     fragility = "Robust" if spread < 40 else "Moderate" if spread < 80 else "Fragile"
-
-    # Multiples — sanity check only
-    sanity = None
-    if eps and eps > 0:
-        band = (eps * 15, eps * 25)
-        implied_pe = value / eps
-        sanity = {"pe_band_low": round(band[0], 2), "pe_band_high": round(band[1], 2), "implied_pe": round(implied_pe, 1),
-                  "status": "within" if band[0] <= value <= band[1] else ("above" if value > band[1] else "below"),
-                  "note": "OptiIQ value implies a P/E of {:.1f}× vs a 15–25× market sanity band.".format(implied_pe)}
+    gap = ((max(vals.values()) - min(vals.values())) / min(vals.values()) * 100) if len(vals) > 1 else None
 
     confidence = "High"
-    if fragility == "Fragile" or (gap is not None and gap > 60) or len(weights) == 1:
+    if fragility == "Fragile" or (gap is not None and gap > 80) or len(vals) == 1:
         confidence = "Low"
-    elif fragility == "Moderate" or (gap is not None and gap > 30) or (sanity and sanity["status"] != "within"):
+    elif fragility == "Moderate" or (gap is not None and gap > 40):
         confidence = "Medium"
 
+    reasons = []
+    reasons.append("Stable, positive free cash flow → DCF weighted most" if stable_cf else "Free cash flow is volatile or negative → DCF de-emphasised")
+    reasons.append("Steady dividend payer → DDM weighted up" if steady_div else ("Dividend too small to value (yield <1% or payout <20%) → DDM skipped" if not ddm_ok else "Modest dividend → DDM given little weight"))
+    if not stable_cf:
+        reasons.append("Earnings-based valuation fills in for unpredictable cash flow")
+
     rnd = lambda v: round(v, 2) if v is not None else None
+    names = {"dcf": "Discounted cash flow", "ddm": "Dividend discount (Gordon)", "earnings": "Earnings-based"}
+    methods = [{"key": k, "name": names[k], "value": rnd(vals.get(k)), "weight_pct": round(w.get(k, 0) * 100),
+                "applicable": k in vals} for k in ("dcf", "ddm", "earnings")]
     return {
         "value": rnd(value), "upside_pct": round((value / price - 1) * 100, 1), "price": round(price, 2),
-        "weights": weights, "confidence": confidence,
-        "dcf": {"value": rnd(dcf), "fcf_ttm": rnd(fcf0), "growth_pct": round(g * 100, 1), "terminal_growth_pct": tg * 100,
-                "discount_pct": round(r * 100, 2), "net_cash": rnd(cash - debt), "shares": round(shares)},
-        "residual_income": {"value": rnd(ri), "book_value_ps": rnd(bv0), "roe_pct": round(roe * 100, 1),
-                            "payout_pct": round(payout * 100, 1), "fade_years": 10},
-        "models_gap_pct": round(gap, 1) if gap is not None else None,
-        "sanity": sanity,
+        "methods": methods, "weight_reasons": reasons, "confidence": confidence, "models_gap_pct": round(gap, 1) if gap is not None else None,
+        "assumptions": {"required_return_pct": round(r * 100, 2), "growth_pct": round(g * 100, 1), "terminal_growth_pct": tg * 100,
+                        "fcf_ttm": rnd(fcf0), "net_cash": rnd(net_cash), "dividend_ps": rnd(d0), "payout_pct": round(payout * 100, 1),
+                        "eps_ttm": rnd(eps), "fair_pe": round(fair_pe, 1)},
         "stress": {"low": rnd(lo), "high": rnd(hi), "spread_pct": round(spread, 1), "fragility": fragility,
                    "factors": [{"name": n, "low": rnd(a), "high": rnd(b)} for n, a, b in factors]},
-        "method": ("1) DCF on trailing free cash flow, growth fading to 2.5% terminal, CAPM discount rate. "
-                   "2) Residual income: book value + excess returns as ROE fades to the cost of equity over 10 years (no terminal-growth reliance). "
-                   "3) Blend 60/40. 4) P/E band used only as a sanity check. 5) Stress test growth, discount rate and margins."),
+        "method": ("DCF: Σ FCFₜ/(1+r)ᵗ + TV/(1+r)ⁿ on trailing free cash flow, growth fading to 2.5%, CAPM required return. "
+                   "DDM (Gordon): D₁/(r−g) with sustainable dividend growth capped at 6%. "
+                   "Earnings: average of discounted earnings and EPS × fair P/E (Graham 8.5 + 2g, capped 10–30×). "
+                   "Weights adapt to cash-flow stability and dividend policy; methods that don't apply are skipped."),
     }
