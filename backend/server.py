@@ -38,7 +38,7 @@ import billing
 from engine import (
     STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
-    trade_plan, price_scenarios, dcf_valuation, default_dcf_inputs,
+    trade_plan, price_scenarios, dcf_valuation, default_dcf_inputs, optiiq_value,
 )
 
 mongo_url = os.environ['MONGO_URL']
@@ -712,6 +712,7 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
                 "market_cap", "enterprise_value", "trailing_pe", "forward_pe", "peg_ratio",
                 "price_to_sales", "price_to_book", "ev_to_revenue", "ev_to_ebitda")},
             "financials": financials,
+            "optiiq": optiiq_value(price, metrics, financials),
             "financials_source": "SEC 10-Q/10-K filings via Finnhub (quarterly values derived from year-to-date figures)",
             "buy_point": valuation["buy_zone_below"] if valuation else None,
             "sell_point": valuation["sell_zone_above"] if valuation else None,

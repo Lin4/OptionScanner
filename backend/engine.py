@@ -651,3 +651,119 @@ def default_dcf_inputs(metrics: Dict[str, Any]) -> Dict[str, Any]:
     tpe = round(min(max((pe or 22) * 0.8, 10), 30), 1)
     return {"growth": {"bull": round(base + 7, 1), "base": base, "bear": round(max(base - 8, -5), 1)},
             "discount_pct": 9.0, "terminal_pe": tpe, "weights": {"bull": 25, "base": 50, "bear": 25}}
+
+
+# ---------------------------------------------------------------- OptiIQ Value
+def _fcf_dcf(fcf0: float, g: float, r: float, tg: float, years: int = 5) -> float:
+    """Total equity-free PV of FCF: years of growth fading linearly to terminal growth + Gordon terminal."""
+    pv, f = 0.0, fcf0
+    for t in range(1, years + 1):
+        gt = g + (tg - g) * (t - 1) / max(years - 1, 1)
+        f *= 1 + gt
+        pv += f / (1 + r) ** t
+    tv = f * (1 + tg) / max(r - tg, 0.01)
+    return pv + tv / (1 + r) ** years
+
+
+def _residual_income(bv0: float, roe: float, r: float, payout: float, years: int = 10) -> float:
+    """RI model: ROE fades linearly to the cost of equity over `years`, so no terminal growth assumption."""
+    val, bv = bv0, bv0
+    for t in range(1, years + 1):
+        roe_t = roe + (r - roe) * t / years
+        eps = roe_t * bv
+        val += (roe_t - r) * bv / (1 + r) ** t
+        bv += eps * (1 - payout)
+    return val
+
+
+def optiiq_value(price: float, metrics: Dict[str, Any], financials: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """OptiIQ Value = 60% FCF-DCF + 40% residual income, sanity-checked by multiples, stress-tested."""
+    mc = metrics.get("market_cap")
+    if not price or not mc:
+        return None
+    shares = mc / price
+    beta = metrics.get("beta") or 1.0
+    r = min(max(RISK_FREE + max(min(beta, 2.5), 0.5) * 0.055, 0.07), 0.13)  # CAPM cost of equity
+    tg = 0.025
+    g_raw = metrics.get("revenue_growth_ttm")
+    g = min(max((g_raw if g_raw is not None else 6.0) / 100, -0.05), 0.20)
+
+    last4 = [q.get("free_cash_flow") for q in (financials or [])[-4:] if q.get("free_cash_flow") is not None]
+    fcf0 = sum(last4) * 4 / len(last4) if last4 else None
+    latest = (financials or [{}])[-1] if financials else {}
+    cash = latest.get("cash") or 0.0
+    debt = latest.get("total_debt") or 0.0
+
+    def dcf_ps(g_, r_, m_):
+        if not fcf0 or fcf0 <= 0:
+            return None
+        return (_fcf_dcf(fcf0 * m_, g_, r_, tg) + cash - debt) / shares
+
+    roe = (metrics.get("roe_ttm") or 0) / 100
+    bv0 = metrics.get("book_value_per_share_q")
+    eps = metrics.get("eps_ttm")
+    dy = (metrics.get("dividend_yield") or 0) / 100
+    payout = min(max((dy * price / eps) if eps and eps > 0 else 0.3, 0.0), 0.9)
+
+    def ri_ps(r_, m_):
+        if not bv0 or bv0 <= 0 or roe <= 0:
+            return None
+        return _residual_income(bv0, roe * m_, r_, payout)
+
+    dcf = dcf_ps(g, r, 1.0)
+    ri = ri_ps(r, 1.0)
+    if dcf is None and ri is None:
+        return None
+    if dcf is not None and ri is not None:
+        value, weights = 0.6 * dcf + 0.4 * ri, {"dcf": 60, "residual_income": 40}
+        gap = abs(dcf - ri) / max(min(abs(dcf), abs(ri)), 0.01) * 100
+    else:
+        value, weights, gap = (dcf if dcf is not None else ri), ({"dcf": 100} if dcf is not None else {"residual_income": 100}), None
+
+    # Stress test: growth ±3pp, discount ±1pp, margins/FCF ±15%
+    def blended(g_=g, r_=r, m_=1.0):
+        a, b = dcf_ps(g_, r_, m_), ri_ps(r_, m_)
+        if a is not None and b is not None:
+            return 0.6 * a + 0.4 * b
+        return a if a is not None else b
+
+    factors = [("Growth ±3pp", blended(g_=g - 0.03), blended(g_=g + 0.03)),
+               ("Discount rate ±1pp", blended(r_=r + 0.01), blended(r_=r - 0.01)),
+               ("Margins / FCF ±15%", blended(m_=0.85), blended(m_=1.15))]
+    combos = [blended(g + dg, r + dr, 1 + dm) for dg in (-0.03, 0, 0.03) for dr in (-0.01, 0, 0.01) for dm in (-0.15, 0, 0.15)]
+    combos = [c for c in combos if c is not None]
+    lo, hi = min(combos), max(combos)
+    spread = (hi - lo) / max(abs(value), 0.01) * 100
+    fragility = "Robust" if spread < 40 else "Moderate" if spread < 80 else "Fragile"
+
+    # Multiples — sanity check only
+    sanity = None
+    if eps and eps > 0:
+        band = (eps * 15, eps * 25)
+        implied_pe = value / eps
+        sanity = {"pe_band_low": round(band[0], 2), "pe_band_high": round(band[1], 2), "implied_pe": round(implied_pe, 1),
+                  "status": "within" if band[0] <= value <= band[1] else ("above" if value > band[1] else "below"),
+                  "note": "OptiIQ value implies a P/E of {:.1f}× vs a 15–25× market sanity band.".format(implied_pe)}
+
+    confidence = "High"
+    if fragility == "Fragile" or (gap is not None and gap > 60) or len(weights) == 1:
+        confidence = "Low"
+    elif fragility == "Moderate" or (gap is not None and gap > 30) or (sanity and sanity["status"] != "within"):
+        confidence = "Medium"
+
+    rnd = lambda v: round(v, 2) if v is not None else None
+    return {
+        "value": rnd(value), "upside_pct": round((value / price - 1) * 100, 1), "price": round(price, 2),
+        "weights": weights, "confidence": confidence,
+        "dcf": {"value": rnd(dcf), "fcf_ttm": rnd(fcf0), "growth_pct": round(g * 100, 1), "terminal_growth_pct": tg * 100,
+                "discount_pct": round(r * 100, 2), "net_cash": rnd(cash - debt), "shares": round(shares)},
+        "residual_income": {"value": rnd(ri), "book_value_ps": rnd(bv0), "roe_pct": round(roe * 100, 1),
+                            "payout_pct": round(payout * 100, 1), "fade_years": 10},
+        "models_gap_pct": round(gap, 1) if gap is not None else None,
+        "sanity": sanity,
+        "stress": {"low": rnd(lo), "high": rnd(hi), "spread_pct": round(spread, 1), "fragility": fragility,
+                   "factors": [{"name": n, "low": rnd(a), "high": rnd(b)} for n, a, b in factors]},
+        "method": ("1) DCF on trailing free cash flow, growth fading to 2.5% terminal, CAPM discount rate. "
+                   "2) Residual income: book value + excess returns as ROE fades to the cost of equity over 10 years (no terminal-growth reliance). "
+                   "3) Blend 60/40. 4) P/E band used only as a sanity check. 5) Stress test growth, discount rate and margins."),
+    }

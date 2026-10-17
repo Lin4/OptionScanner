@@ -14,7 +14,7 @@ import { useTTS, useSTT } from "@/src/voice";
 import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate, usePlan } from "@/src/plans";
 import { ACCOUNTS, Chips, Label, OptionInsights, accountLabel } from "@/src/screen";
-import { FinancialsChart, ValuationMeasures, PeerComparison, BalanceSheet } from "@/src/financials";
+import { FinancialsChart, ValuationMeasures, PeerComparison, BalanceSheet, OptiIQCard } from "@/src/financials";
 
 const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Sell Put", "Sell Call", "Short Strangle"];
 
@@ -492,6 +492,8 @@ function LongForm({ r }: { r: any }) {
         <Badge text={r.verdict || "HOLD"} kind={r.verdict === "BUY" ? "success" : r.verdict === "SELL" ? "error" : "warn"} />
         {r.confidence ? <Badge text={`${r.confidence} conf.`} kind="info" /> : null}
       </View>
+      <Text style={styles.sectionLabel}>OptiIQ Value</Text>
+      <OptiIQCard o={r.optiiq} />
       <ValuationEditor r={r} />
       <Text style={styles.sectionLabel}>Fundamentals</Text>
       <ValuationMeasures m={r.valuation_measures || {}} buy={r.buy_point} sell={r.sell_point} />

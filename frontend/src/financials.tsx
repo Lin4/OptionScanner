@@ -181,6 +181,19 @@ export function PeerComparison({ ticker }: { ticker: string }) {
 }
 
 const s = StyleSheet.create({
+  iq: { backgroundColor: colors.brandSecondary, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.brandPrimary, padding: spacing.lg, marginBottom: spacing.md },
+  iqTop: { flexDirection: "row", alignItems: "flex-start", marginBottom: spacing.sm },
+  iqLabel: { fontSize: 11, fontWeight: "800", color: colors.onBrandSecondary, textTransform: "uppercase", letterSpacing: 1 },
+  iqValue: { fontSize: 30, fontWeight: "800", color: colors.onSurface, fontVariant: ["tabular-nums"], letterSpacing: -0.5 },
+  iqUp: { fontSize: 13, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  iqBadge: { fontSize: 11, fontWeight: "800", borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 4 },
+  iqSmall: { fontSize: 11, color: colors.onSurfaceSecondary, marginTop: 2 },
+  iqSection: { fontSize: 10, fontWeight: "800", color: colors.muted, textTransform: "uppercase", letterSpacing: 1, marginTop: spacing.sm, marginBottom: 6 },
+  rangeTrack: { height: 12, borderRadius: 6, backgroundColor: colors.surfaceTertiary, position: "relative" },
+  rangeFill: { position: "absolute", top: 0, bottom: 0, borderRadius: 6, backgroundColor: colors.brandPrimary, opacity: 0.3 },
+  rangeMark: { position: "absolute", top: -3, width: 4, height: 18, borderRadius: 2, marginLeft: -2 },
+  iqToggle: { minHeight: 44, justifyContent: "center", alignItems: "center" },
+  iqToggleText: { color: colors.brandPrimary, fontWeight: "800", fontSize: 13 },
   toggle: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginBottom: spacing.sm },
   toggleBtn: { minHeight: 36, paddingHorizontal: spacing.md, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
   toggleActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
@@ -205,3 +218,61 @@ const s = StyleSheet.create({
   tdHead: { fontSize: 10, color: colors.muted, fontWeight: "800" },
   note: { fontSize: 10, color: colors.muted, fontStyle: "italic", marginTop: spacing.sm, lineHeight: 14 },
 });
+
+/** OptiIQ Value: DCF + residual income blend, multiples sanity check, stress test. */
+export function OptiIQCard({ o }: { o: any }) {
+  const [open, setOpen] = useState(false);
+  if (!o) return <Text style={s.empty}>OptiIQ Value needs positive cash flow or book value — not available for this ticker.</Text>;
+  const up = o.upside_pct >= 0;
+  const confColor = o.confidence === "High" ? colors.success : o.confidence === "Medium" ? colors.warning : colors.error;
+  const lo = o.stress.low, hi = o.stress.high;
+  const span = Math.max(hi, o.price) - Math.min(lo, o.price) || 1;
+  const min = Math.min(lo, o.price);
+  const pos = (v: number) => `${Math.min(100, Math.max(0, ((v - min) / span) * 100))}%` as any;
+  return (
+    <View testID="optiiq-card" style={s.iq}>
+      <View style={s.iqTop}>
+        <View style={{ flex: 1 }}>
+          <Text style={s.iqLabel}>OptiIQ Value</Text>
+          <Text testID="optiiq-value" style={s.iqValue}>${o.value}</Text>
+          <Text style={[s.iqUp, { color: up ? colors.success : colors.error }]}>{up ? "+" : ""}{o.upside_pct}% vs ${o.price}</Text>
+        </View>
+        <View style={{ alignItems: "flex-end", gap: 4 }}>
+          <Text testID="optiiq-confidence" style={[s.iqBadge, { color: confColor, borderColor: confColor }]}>{o.confidence} confidence</Text>
+          <Text style={s.iqSmall}>Stress: {o.stress.fragility}</Text>
+        </View>
+      </View>
+
+      <Text style={s.iqSection}>Stress-test range</Text>
+      <View style={s.rangeTrack}>
+        <View style={[s.rangeFill, { left: pos(lo), width: `${((hi - lo) / span) * 100}%` as any }]} />
+        <View style={[s.rangeMark, { left: pos(o.value), backgroundColor: colors.brandPrimary }]} />
+        <View style={[s.rangeMark, { left: pos(o.price), backgroundColor: colors.onSurface }]} />
+      </View>
+      <Text style={s.iqSmall}>${lo} – ${hi} (±{Math.round(o.stress.spread_pct / 2)}%) · teal = OptiIQ, dark = price</Text>
+
+      <MetricRow label={`DCF (free cash flow) · ${o.weights.dcf ?? 0}%`} value={o.dcf.value != null ? `$${o.dcf.value}` : "n/a"} />
+      <MetricRow label={`Residual income · ${o.weights.residual_income ?? 0}%`} value={o.residual_income.value != null ? `$${o.residual_income.value}` : "n/a"} />
+      {o.models_gap_pct != null ? <MetricRow label="Gap between models" value={`${o.models_gap_pct}%`} /> : null}
+      {o.sanity ? <MetricRow label="Multiples sanity (P/E 15–25×)" value={`${o.sanity.implied_pe}× · ${o.sanity.status}`} color={o.sanity.status === "within" ? colors.success : colors.warning} /> : null}
+
+      <Pressable testID="optiiq-details" onPress={() => setOpen((v) => !v)} style={s.iqToggle}>
+        <Text style={s.iqToggleText}>{open ? "Hide" : "Show"} assumptions & stress test</Text>
+      </Pressable>
+      {open ? (
+        <View testID="optiiq-breakdown">
+          <MetricRow label="FCF (annualized TTM)" value={big(o.dcf.fcf_ttm)} />
+          <MetricRow label="Growth → terminal" value={`${o.dcf.growth_pct}% → ${o.dcf.terminal_growth_pct}%`} />
+          <MetricRow label="Discount rate (CAPM)" value={`${o.dcf.discount_pct}%`} />
+          <MetricRow label="Net cash" value={big(o.dcf.net_cash)} />
+          <MetricRow label="Book value / share" value={o.residual_income.book_value_ps != null ? `$${o.residual_income.book_value_ps}` : "—"} />
+          <MetricRow label="ROE (fades to cost of equity)" value={`${o.residual_income.roe_pct}% · ${o.residual_income.fade_years}y`} />
+          {o.stress.factors.map((f: any) => (
+            <MetricRow key={f.name} label={f.name} value={`$${f.low ?? "—"} – $${f.high ?? "—"}`} />
+          ))}
+          <Text style={s.note}>{o.method} Research only — not investment advice.</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
