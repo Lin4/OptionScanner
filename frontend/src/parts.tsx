@@ -48,11 +48,11 @@ export function MetricRow({ label, value, mono = true, color }: { label: string;
   );
 }
 
-export function Badge({ text, kind = "info" }: { text: string; kind?: "info" | "success" | "error" | "warn" | "brand" }) {
+export function Badge({ text, kind = "info", testID }: { text: string; kind?: "info" | "success" | "error" | "warn" | "brand"; testID?: string }) {
   const bg = kind === "success" ? colors.brandTertiary : kind === "error" ? "#FEE2E2" : kind === "warn" ? "#FEF3C7" : kind === "brand" ? colors.brandSecondary : colors.surfaceTertiary;
   const fg = kind === "success" ? colors.onBrandTertiary : kind === "error" ? colors.error : kind === "warn" ? "#92400E" : kind === "brand" ? colors.onBrandSecondary : colors.onSurfaceSecondary;
   return (
-    <View style={[styles.badge, { backgroundColor: bg }]}>
+    <View testID={testID} style={[styles.badge, { backgroundColor: bg }]}>
       <Text style={[styles.badgeText, { color: fg }]}>{text}</Text>
     </View>
   );

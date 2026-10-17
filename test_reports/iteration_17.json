@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 17 - Tradier live chain + new OptiIQ Value formula + AlertAddReq validation + login branding all verified. Backend 13/13 pytest cases pass. Frontend verified on mobile viewport (390x844): login screen shows 'Sign in to OptiScreen' and login-brand-hint; Analyze -> Options Lab for AAPL shows quote-source-badge 'Live . Tradier'; Analyze -> Long-term for AAPL renders optiiq-card + optiiq-formula with value $113.70, pv_cash_flows $1.59T, net_assets $62.25B, shares 14.58B; optiiq-details toggle expands optiiq-breakdown with Y1..Y10 cash-flow bars ($151.57B..$147.23B), discount rate 10.58%, growth 14.2% -> 7.1%, and 3 stress factors (Growth +/-3pp, Discount rate +/-1pp, Cash flow +/-15%). JPM shows optiiq-unavailable with reason 'Operating cash flow over the last 12 months is negative...'. No deprecated expo packages or React Native issues detected.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter17_tradier_optiiq.py",
+    "/app/test_reports/pytest/iteration17_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "backend/tradier.py: token read from env TRADIER_PRODUCTION_TOKEN, Semaphore(6), 60s chain cache, 6h expirations cache - all safe for Tradier 120 req/min. Clean fallback to None on any error -> engine uses Black-Scholes labelled 'Model estimate'.",
+    "backend/engine.py optiiq_value: formula == (sum PV + net_assets)/shares with no terminal value as specified. 10-year projection, CAPM discount clamped 7-13%, g1 clamped [-5%,20%], g2 = g1/2. Negative CFO -> available=False with explicit reason. Stress 3^3 combos produce low/high/fragility.",
+    "backend/engine.py price_legs: when live chain present, snaps legs to real listed strikes (snap_legs), uses real bid/ask mid, labels leg.live=True; aggregate liquidity.estimated=False. live_quotes flag only true when every option leg filled from chain.",
+    "backend/server.py AlertAddReq: Literal kind + Field(gt=0, allow_inf_nan=False) + model_validator enforcing threshold required for price alerts. All 5 invalid variants return 422; cleanup DELETE verified."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter17_tradier_optiiq.py (new)"
+  ],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% (login, AAPL options Live-Tradier badge, AAPL long OptiIQ card+formula+breakdown Y1..Y10, JPM optiiq-unavailable all verified)"},
+  "seed_data_creation": "None - used trader@optiscreen.app seed account. Test alerts cleaned up in teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "ticker-options result shape: {live_quotes:true, quote_source:'Tradier', legs:[...{bid,ask,live:true}], liquidity.estimated:false, data_source.options_live:true, expiration:'YYYY-MM-DD'}. optiiq payload at result.optiiq: {available, value, upside_pct, confidence, formula:{pv_cash_flows,net_assets,shares,pv_per_share,net_assets_per_share}, projection:[10 rows {year,cash_flow,pv}], assumptions:{years:10,discount_rate_pct,growth_y1_5_pct,growth_y6_10_pct,cfo_ttm,cash,debt}, stress:{low,high,spread_pct,fragility,factors:[3]}, weight_reasons:[...], method}. For negative-CFO or missing-shares tickers (banks like JPM, cash burners like MRNA) available=false with 'reason' string. AlertAddReq uses Literal kind in {price_above, price_below, earnings, smart_setup}; threshold Field(gt=0, le=1e7, allow_inf_nan=False) required for price_* kinds (422 otherwise). AAPL OptiIQ value ~$113.70 vs market ~$343 is intentional (formula has no terminal value per user spec, not a bug).",
+  "rca_of_issue": "N/A - feature validation iteration, no bugs found."
+}

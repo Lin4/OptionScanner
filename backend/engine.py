@@ -196,34 +196,99 @@ def leg_liquidity(ticker: str, S: float, K: float, iv: float, dte: int, theo: fl
             "spread_pct": round(spread / theo * 100, 1) if theo > 0.005 else 100.0}
 
 
-def price_legs(ticker: str, legs: List[Dict], S: float, iv: float, dte: int) -> Tuple[List[Dict], Dict[str, Any]]:
+def _side(chain: Dict[str, Any], l: Dict) -> Dict[float, Dict]:
+    return chain["calls"] if l["type"].lower() == "call" else chain["puts"]
+
+
+def snap_legs(legs: List[Dict], chain: Dict[str, Any], S: float, exp_date: str) -> List[Dict]:
+    """Move model strikes onto real listed strikes (with a quote); keep spread wings from collapsing."""
+    out, taken = [], {}
+    order = sorted(range(len(legs)), key=lambda i: abs(float(legs[i]["strike"]) - S))
+    snapped: Dict[int, Dict] = {}
+    for i in order:
+        l = legs[i]
+        if not _is_opt(l):
+            snapped[i] = l
+            continue
+        side = _side(chain, l)
+        ks = sorted(k for k, o in side.items() if (o.get("ask") or 0) > 0) or sorted(side)
+        orig = float(l["strike"])
+        j = min(range(len(ks)), key=lambda n: abs(ks[n] - orig))
+        key = l["type"].lower()
+        prev = taken.get((key, ks[j]))
+        if prev is not None and prev != orig:  # different model strike collapsed onto the same listed strike
+            step = 1 if orig > prev else -1
+            j = min(max(j + step, 0), len(ks) - 1)
+        taken[(key, ks[j])] = orig
+        snapped[i] = {**l, "strike": ks[j], "exp": exp_date}
+    for i in range(len(legs)):
+        out.append(snapped[i])
+    return out
+
+
+def _live_leg(l: Dict, chain: Dict[str, Any], S: float, T: float, iv: float) -> Optional[Dict[str, Any]]:
+    o = _side(chain, l).get(float(l["strike"]))
+    if not o:
+        return None
+    bid, ask = float(o.get("bid") or 0), float(o.get("ask") or 0)
+    if ask <= 0 or ask < bid:
+        return None
+    g = o.get("greeks") or {}
+    leg_iv = g.get("mid_iv") or g.get("smv_vol") or iv
+    if g.get("delta") is None:
+        g = {**bs_greeks(S, float(l["strike"]), T, leg_iv, r=RISK_FREE, call=l["type"].lower() == "call"), "mid_iv": leg_iv}
+    mid = (bid + ask) / 2
+    spread = ask - bid
+    return {"mid": round(mid, 2), "bid": bid, "ask": ask, "iv": round(leg_iv, 4), "symbol": o.get("symbol"),
+            "delta": g.get("delta") or 0.0, "gamma": g.get("gamma") or 0.0, "theta": g.get("theta") or 0.0, "vega": g.get("vega") or 0.0,
+            "liquidity": {"open_interest": int(o.get("open_interest") or 0), "volume": int(o.get("volume") or 0),
+                          "bid_ask": round(spread, 2), "spread_pct": round(spread / mid * 100, 1) if mid > 0.005 else 100.0,
+                          "estimated": False}}
+
+
+def price_legs(ticker: str, legs: List[Dict], S: float, iv: float, dte: int,
+               chain: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict], Dict[str, Any]]:
     T = max(dte, 1) / 365
     out = []
     net_mid = net_fill = 0.0
-    contracts = 0
+    contracts = live = 0
     for l in legs:
         s, q = _sign(l), l.get("qty", 1)
         if not _is_opt(l):
             out.append({**l, "theo_price": round(S, 2), "mid": round(S, 2), "fill": round(S, 2),
                         "delta": round(s * q * 1.0, 3), "gamma": 0.0, "theta": 0.0, "vega": 0.0})
             continue
-        g = bs_greeks(S, float(l["strike"]), T, iv, r=RISK_FREE, call=l["type"].lower() == "call")
-        liq = leg_liquidity(ticker, S, float(l["strike"]), iv, dte, g["price"])
-        fill = max(0.01, g["price"] + s * SLIPPAGE_FRACTION * liq["bid_ask"])
-        net_mid += -s * q * g["price"]
+        lv = _live_leg(l, chain, S, T, iv) if chain else None
+        if lv:
+            live += 1
+            mid, liq, gk = lv["mid"], lv["liquidity"], lv
+            extra = {"bid": lv["bid"], "ask": lv["ask"], "iv": lv["iv"], "option_symbol": lv["symbol"], "live": True}
+        else:
+            gk = bs_greeks(S, float(l["strike"]), T, iv, r=RISK_FREE, call=l["type"].lower() == "call")
+            mid = gk["price"]
+            liq = {**leg_liquidity(ticker, S, float(l["strike"]), iv, dte, mid), "estimated": True}
+            extra = {"live": False}
+        fill = max(0.01, mid + s * SLIPPAGE_FRACTION * liq["bid_ask"])
+        net_mid += -s * q * mid
         net_fill += -s * q * fill
         contracts += q
-        out.append({**l, "theo_price": g["price"], "mid": g["price"], "fill": round(fill, 2),
-                    "delta": round(g["delta"] * s * q, 3), "gamma": round(g["gamma"] * s * q, 4),
-                    "theta": round(g["theta"] * s * q, 3), "vega": round(g["vega"] * s * q, 3),
-                    "liquidity": liq})
+        out.append({**l, "theo_price": mid, "mid": mid, "fill": round(fill, 2),
+                    "delta": round(gk["delta"] * s * q, 3), "gamma": round(gk["gamma"] * s * q, 4),
+                    "theta": round(gk["theta"] * s * q, 3), "vega": round(gk["vega"] * s * q, 3),
+                    "liquidity": liq, **extra})
     fees = round(contracts * FEE_PER_CONTRACT, 2)
+    src = "live bid/ask mid" if live and live == contracts_legs(legs) else "theoretical mid"
     pricing = {
         "net_mid": round(net_mid, 2), "net_fill": round(net_fill, 2),
         "slippage_cost": round((net_mid - net_fill) * 100, 2), "fees": fees, "contracts": contracts,
-        "note": f"Mid price with {int(SLIPPAGE_FRACTION * 100)}% of the bid-ask spread as slippage, ${FEE_PER_CONTRACT}/contract fees",
+        "live": bool(live) and live == contracts_legs(legs),
+        "note": f"{src.capitalize()} with {int(SLIPPAGE_FRACTION * 100)}% of the bid-ask spread as slippage, ${FEE_PER_CONTRACT}/contract fees",
     }
     return out, pricing
+
+
+def contracts_legs(legs: List[Dict]) -> int:
+    return sum(1 for l in legs if _is_opt(l))
 
 
 def aggregate_liquidity(legs: List[Dict], premium_net: float) -> Dict[str, Any]:
@@ -235,9 +300,10 @@ def aggregate_liquidity(legs: List[Dict], premium_net: float) -> Dict[str, Any]:
     spread_total = sum(l["liquidity"]["bid_ask"] * l.get("qty", 1) for l in opts)
     spread_pct = spread_total / abs(premium_net) * 100 if abs(premium_net) > 0.005 else 100.0
     grade = "High" if min_oi >= 1000 and spread_pct <= 8 else "Medium" if min_oi >= 200 and spread_pct <= 20 else "Low"
+    est = any(l["liquidity"].get("estimated", True) for l in opts)
     return {"min_open_interest": min_oi, "min_volume": min_vol, "spread_total": round(spread_total, 2),
-            "spread_pct_of_premium": round(spread_pct, 1), "grade": grade, "estimated": True,
-            "note": "Model estimate (no real option chain on free data tier)"}
+            "spread_pct_of_premium": round(spread_pct, 1), "grade": grade, "estimated": est,
+            "note": "Model estimate (live chain unavailable)" if est else "Real open interest, volume & bid-ask from the live chain"}
 
 
 # ---------------------------------------------------------------- payoff + probability
@@ -417,10 +483,21 @@ def events_and_assignment(name: str, legs: List[Dict], S: float, iv: float, dte:
 # ---------------------------------------------------------------- full idea
 def build_idea(ticker: str, info: Dict[str, Any], name: str, S: float, vol: Dict[str, Any], dte: int,
                account_type: str = "reg_t", earnings_date: Optional[str] = None,
-               dividend_yield: Optional[float] = None, scale: float = 1.0) -> Dict[str, Any]:
+               dividend_yield: Optional[float] = None, scale: float = 1.0,
+               chain: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if chain:
+        dte, exp_date = chain["dte"], chain["expiration"]
+        if chain.get("atm_iv"):
+            vol = {**vol, "iv": chain["atm_iv"], "iv_vs_hv": round(chain["atm_iv"] / vol["hv20"], 2) if vol.get("hv20") else None,
+                   "method": f"Live at-the-money implied vol from {chain['source']} (ORATS); IV rank uses rolling HV history",
+                   "estimated": False}
+    else:
+        exp_date = (datetime.now(timezone.utc) + timedelta(days=dte)).strftime("%Y-%m-%d")
     iv, hv = vol["iv"], vol["hv20"]
-    exp_date = (datetime.now(timezone.utc) + timedelta(days=dte)).strftime("%Y-%m-%d")
-    legs, pricing = price_legs(ticker, build_legs(name, S, iv, dte, exp_date, scale), S, iv, dte)
+    legs = build_legs(name, S, iv, dte, exp_date, scale)
+    if chain:
+        legs = snap_legs(legs, chain, S, exp_date)
+    legs, pricing = price_legs(ticker, legs, S, iv, dte, chain)
     premium_net = pricing["net_fill"]
     fees = pricing["fees"]
     stats = payoff_stats(legs, S, premium_net, fees)
@@ -457,9 +534,13 @@ def build_idea(ticker: str, info: Dict[str, Any], name: str, S: float, vol: Dict
         "greeks": net_greeks, "iv_assumed": iv,
         "scenario_matrix": scenario_grid(legs, S, iv, dte, fees),
         "score": score,
+        "live_quotes": pricing["live"],
+        "quote_source": (chain or {}).get("source") if pricing["live"] else "Black-Scholes model",
+        "quotes_as_of": (chain or {}).get("as_of") if pricing["live"] else None,
         "assumptions": {"iv_assumed_pct": round(iv * 100, 1), "risk_free_rate_pct": RISK_FREE * 100,
-                        "model": "Black-Scholes European", "slippage": pricing["note"],
-                        "pricing_note": "Theoretical mid prices. Real option quotes may differ."},
+                        "model": f"Live {chain['source']} quotes; probabilities via lognormal IV model" if pricing["live"] else "Black-Scholes European",
+                        "slippage": pricing["note"],
+                        "pricing_note": "Real bid/ask from the listed chain." if pricing["live"] else "Theoretical mid prices. Real option quotes may differ."},
     }
     idea["why"], idea["risks"] = explain_deterministic(idea)
     return idea
@@ -654,127 +735,84 @@ def default_dcf_inputs(metrics: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------- OptiIQ Value
-def _fcf_dcf(fcf0: float, g: float, r: float, tg: float, years: int = 5) -> float:
-    """Total equity-free PV of FCF: years of growth fading linearly to terminal growth + Gordon terminal."""
-    pv, f = 0.0, fcf0
+OPTIIQ_YEARS = 10
+
+
+def _project_cfo(cfo0: float, g1: float, g2: float, r: float, years: int = OPTIIQ_YEARS) -> List[Dict[str, float]]:
+    """Years 1-5 grow at g1, years 6-10 at g2; each year discounted at r. No terminal value (conservative)."""
+    rows, cf = [], cfo0
     for t in range(1, years + 1):
-        gt = g + (tg - g) * (t - 1) / max(years - 1, 1)
-        f *= 1 + gt
-        pv += f / (1 + r) ** t
-    tv = f * (1 + tg) / max(r - tg, 0.01)
-    return pv + tv / (1 + r) ** years
+        cf *= 1 + (g1 if t <= 5 else g2)
+        rows.append({"year": t, "cash_flow": cf, "pv": cf / (1 + r) ** t})
+    return rows
 
 
-def _discounted_earnings(eps0: float, g: float, r: float, tg: float, years: int = 5) -> float:
-    pv, e = 0.0, eps0
-    for t in range(1, years + 1):
-        e *= 1 + g + (tg - g) * (t - 1) / max(years - 1, 1)
-        pv += e / (1 + r) ** t
-    return pv + e * (1 + tg) / max(r - tg, 0.01) / (1 + r) ** years
-
-
-def optiiq_value(price: float, metrics: Dict[str, Any], financials: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """OptiIQ Value = smart-weighted blend of DCF, Dividend Discount Model and earnings-based valuation, stress-tested."""
+def optiiq_value(price: float, metrics: Dict[str, Any], financials: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """OptiIQ Value = (Σ PV of next 10 years' operating cash flow + net assets [cash − debt]) ÷ shares outstanding."""
     mc = metrics.get("market_cap")
     if not price or not mc:
-        return None
+        return {"available": False, "reason": "Market cap or price unavailable for this ticker."}
     shares = mc / price
+    q = [x for x in (financials or [])[-4:] if x.get("operating_cash_flow") is not None]
+    if not q:
+        return {"available": False, "reason": "No operating cash flow reported in recent filings."}
+    cfo0 = sum(x["operating_cash_flow"] for x in q) * 4 / len(q)  # trailing 12 months (annualized if <4 quarters)
+    if cfo0 <= 0:
+        return {"available": False, "reason": "Operating cash flow over the last 12 months is negative, so there are no positive "
+                "cash flows to project. This happens with cash-burning growth companies and with banks, whose operating cash flow "
+                "swings with loan and trading activity. OptiIQ Value isn't meaningful until it turns positive."}
+
+    latest = (financials or [{}])[-1]
+    cash, debt = latest.get("cash") or 0.0, latest.get("total_debt") or 0.0
+    net_assets = cash - debt
     beta = metrics.get("beta") or 1.0
-    r = min(max(RISK_FREE + max(min(beta, 2.5), 0.5) * 0.055, 0.07), 0.13)  # CAPM required return
-    tg = 0.025
+    r = min(max(RISK_FREE + max(min(beta, 2.5), 0.5) * 0.055, 0.07), 0.13)  # CAPM discount rate
     g_raw = metrics.get("revenue_growth_ttm")
-    g = min(max((g_raw if g_raw is not None else 6.0) / 100, -0.05), 0.20)
+    g1 = min(max((g_raw if g_raw is not None else 5.0) / 100, -0.05), 0.20)
+    g2 = g1 / 2
 
-    fcfs = [q.get("free_cash_flow") for q in (financials or [])[-4:] if q.get("free_cash_flow") is not None]
-    fcf0 = sum(fcfs) * 4 / len(fcfs) if fcfs else None
-    latest = (financials or [{}])[-1] if financials else {}
-    net_cash = (latest.get("cash") or 0.0) - (latest.get("total_debt") or 0.0)
-    eps = metrics.get("eps_ttm")
-    dy = (metrics.get("dividend_yield") or 0) / 100
-    d0 = dy * price
-    roe = (metrics.get("roe_ttm") or 0) / 100
-    payout = (d0 / eps) if eps and eps > 0 and d0 > 0 else 0.0
+    def iv(g1_=g1, g2_=g2, r_=r, m_=1.0):
+        pv = sum(x["pv"] for x in _project_cfo(cfo0 * m_, g1_, g2_, r_))
+        return (pv + net_assets) / shares
 
-    # Company-type signals for smart weighting
-    mean_f = sum(fcfs) / len(fcfs) if fcfs else 0
-    cv = (math.sqrt(sum((x - mean_f) ** 2 for x in fcfs) / len(fcfs)) / abs(mean_f)) if fcfs and mean_f else 9
-    stable_cf = len(fcfs) >= 3 and all(x > 0 for x in fcfs) and cv < 0.5
-    steady_div = dy >= 0.02 and 0.2 <= payout <= 0.95
-    fair_pe = min(max(8.5 + 2 * g * 100, 10), 30)  # Graham growth-adjusted P/E
+    value = iv()
+    rows = _project_cfo(cfo0, g1, g2, r)
+    pv_total = sum(x["pv"] for x in rows)
+    if value <= 0:
+        return {"available": False, "reason": "Debt exceeds the present value of 10 years of operating cash flow, "
+                "so the formula gives a negative value per share."}
 
-    def m_dcf(g_, r_, m_):
-        if not fcf0 or fcf0 <= 0:
-            return None
-        return (_fcf_dcf(fcf0 * m_, g_, r_, tg) + net_cash) / shares
-
-    ddm_ok = dy >= 0.01 and payout >= 0.2  # token dividends don't drive value
-
-    def m_ddm(g_, r_, m_):
-        if not ddm_ok:
-            return None
-        sustainable = roe * (1 - min(payout, 1)) if roe > 0 else g_
-        gd = min(max(min(sustainable, g_ if g_ > 0 else sustainable), 0.0), 0.06, r_ - 0.02)
-        return d0 * (1 + gd) / (r_ - gd)
-
-    def m_earn(g_, r_, m_):
-        if not eps or eps <= 0:
-            return None
-        e = eps * m_
-        pe = min(max(8.5 + 2 * g_ * 100, 10), 30)
-        return 0.5 * _discounted_earnings(e, g_, r_, tg) + 0.5 * e * pe
-
-    base_w = {"dcf": 0.5 if stable_cf else 0.2, "ddm": 0.4 if steady_div else 0.1, "earnings": 0.3 if stable_cf else 0.5}
-    fns = {"dcf": m_dcf, "ddm": m_ddm, "earnings": m_earn}
-
-    def blend(g_=g, r_=r, m_=1.0):
-        vals = {k: f(g_, r_, m_) for k, f in fns.items()}
-        vals = {k: v for k, v in vals.items() if v is not None and v > 0}
-        if not vals:
-            return None, {}, {}
-        tw = sum(base_w[k] for k in vals)
-        w = {k: base_w[k] / tw for k in vals}
-        return sum(vals[k] * w[k] for k in vals), vals, w
-
-    value, vals, w = blend()
-    if value is None:
-        return None
-
-    factors = [("Growth ±3pp", blend(g_=g - 0.03)[0], blend(g_=g + 0.03)[0]),
-               ("Required return ±1pp", blend(r_=r + 0.01)[0], blend(r_=r - 0.01)[0]),
-               ("Margins / earnings ±15%", blend(m_=0.85)[0], blend(m_=1.15)[0])]
-    combos = [blend(g + dg, r + dr, 1 + dm)[0] for dg in (-0.03, 0, 0.03) for dr in (-0.01, 0, 0.01) for dm in (-0.15, 0, 0.15)]
-    combos = [c for c in combos if c is not None]
+    factors = [("Growth ±3pp", iv(g1 - 0.03, (g1 - 0.03) / 2), iv(g1 + 0.03, (g1 + 0.03) / 2)),
+               ("Discount rate ±1pp", iv(r_=r + 0.01), iv(r_=r - 0.01)),
+               ("Cash flow ±15%", iv(m_=0.85), iv(m_=1.15))]
+    combos = [iv(g1 + dg, (g1 + dg) / 2, r + dr, 1 + dm) for dg in (-0.03, 0, 0.03) for dr in (-0.01, 0, 0.01) for dm in (-0.15, 0, 0.15)]
     lo, hi = min(combos), max(combos)
     spread = (hi - lo) / max(abs(value), 0.01) * 100
     fragility = "Robust" if spread < 40 else "Moderate" if spread < 80 else "Fragile"
-    gap = ((max(vals.values()) - min(vals.values())) / min(vals.values()) * 100) if len(vals) > 1 else None
 
-    confidence = "High"
-    if fragility == "Fragile" or (gap is not None and gap > 80) or len(vals) == 1:
-        confidence = "Low"
-    elif fragility == "Moderate" or (gap is not None and gap > 40):
-        confidence = "Medium"
+    vals = [x["operating_cash_flow"] for x in q]
+    mean = sum(vals) / len(vals)
+    cv = math.sqrt(sum((v - mean) ** 2 for v in vals) / len(vals)) / abs(mean) if mean else 9
+    stable = len(vals) >= 4 and all(v > 0 for v in vals) and cv < 0.5
+    confidence = "Low" if fragility == "Fragile" or not stable else "Medium" if fragility == "Moderate" else "High"
 
-    reasons = []
-    reasons.append("Stable, positive free cash flow → DCF weighted most" if stable_cf else "Free cash flow is volatile or negative → DCF de-emphasised")
-    reasons.append("Steady dividend payer → DDM weighted up" if steady_div else ("Dividend too small to value (yield <1% or payout <20%) → DDM skipped" if not ddm_ok else "Modest dividend → DDM given little weight"))
-    if not stable_cf:
-        reasons.append("Earnings-based valuation fills in for unpredictable cash flow")
+    reasons = ["Operating cash flow positive in every recent quarter" if stable
+               else "Quarterly operating cash flow is uneven — treat the value with caution",
+               f"Net assets {'add' if net_assets >= 0 else 'subtract'} ${abs(net_assets) / shares:,.2f}/share "
+               f"({'more cash than debt' if net_assets >= 0 else 'more debt than cash'})"]
 
     rnd = lambda v: round(v, 2) if v is not None else None
-    names = {"dcf": "Discounted cash flow", "ddm": "Dividend discount (Gordon)", "earnings": "Earnings-based"}
-    methods = [{"key": k, "name": names[k], "value": rnd(vals.get(k)), "weight_pct": round(w.get(k, 0) * 100),
-                "applicable": k in vals} for k in ("dcf", "ddm", "earnings")]
     return {
-        "value": rnd(value), "upside_pct": round((value / price - 1) * 100, 1), "price": round(price, 2),
-        "methods": methods, "weight_reasons": reasons, "confidence": confidence, "models_gap_pct": round(gap, 1) if gap is not None else None,
-        "assumptions": {"required_return_pct": round(r * 100, 2), "growth_pct": round(g * 100, 1), "terminal_growth_pct": tg * 100,
-                        "fcf_ttm": rnd(fcf0), "net_cash": rnd(net_cash), "dividend_ps": rnd(d0), "payout_pct": round(payout * 100, 1),
-                        "eps_ttm": rnd(eps), "fair_pe": round(fair_pe, 1)},
+        "available": True, "value": rnd(value), "upside_pct": round((value / price - 1) * 100, 1), "price": round(price, 2),
+        "confidence": confidence, "weight_reasons": reasons,
+        "formula": {"pv_cash_flows": rnd(pv_total), "net_assets": rnd(net_assets), "shares": round(shares),
+                    "pv_per_share": rnd(pv_total / shares), "net_assets_per_share": rnd(net_assets / shares)},
+        "projection": [{"year": x["year"], "cash_flow": rnd(x["cash_flow"]), "pv": rnd(x["pv"])} for x in rows],
+        "assumptions": {"years": OPTIIQ_YEARS, "discount_rate_pct": round(r * 100, 2), "growth_y1_5_pct": round(g1 * 100, 1),
+                        "growth_y6_10_pct": round(g2 * 100, 1), "cfo_ttm": rnd(cfo0), "cash": rnd(cash), "debt": rnd(debt)},
         "stress": {"low": rnd(lo), "high": rnd(hi), "spread_pct": round(spread, 1), "fragility": fragility,
                    "factors": [{"name": n, "low": rnd(a), "high": rnd(b)} for n, a, b in factors]},
-        "method": ("DCF: Σ FCFₜ/(1+r)ᵗ + TV/(1+r)ⁿ on trailing free cash flow, growth fading to 2.5%, CAPM required return. "
-                   "DDM (Gordon): D₁/(r−g) with sustainable dividend growth capped at 6%. "
-                   "Earnings: average of discounted earnings and EPS × fair P/E (Graham 8.5 + 2g, capped 10–30×). "
-                   "Weights adapt to cash-flow stability and dividend policy; methods that don't apply are skipped."),
+        "method": ("IV = (Σ PV of future operating cash flows + net assets) ÷ shares outstanding. Trailing-12-month operating cash flow "
+                   "is projected 10 years (years 1–5 at revenue growth, years 6–10 at half that), each year discounted at a CAPM "
+                   "rate; net assets = cash − total debt. No terminal value is added, which keeps the estimate conservative."),
     }

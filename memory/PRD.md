@@ -97,3 +97,9 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 ## Update (Jun 2026)
 - Alerts: AlertAddReq now validates kind (Literal), threshold (>0, <=1e7, no NaN/inf), and requires threshold for price alerts -> 422 on bad payloads.
 - Login: retitled 'Sign in to OptiScreen' + hint that it's not the Expo account.
+
+## Update (Jun 2026) — Live options + new OptiIQ
+- Tradier live options (backend/tradier.py): TRADIER_ENV=production, tokens in backend/.env. Nearest listed expiration to target DTE, chain cached 60s, exp list 6h. engine.build_idea(chain=...) snaps strikes to listed ones, prices from bid/ask mid, real OI/volume/Greeks/ATM IV. Falls back to Black-Scholes per leg if missing. Fields: live_quotes, quote_source, quotes_as_of, data_source.options_live. Backtest/smart alerts still use model.
+- OptiIQ Value replaced: IV = (Σ PV of 10y operating cash flow + cash − debt) / shares. Years 1–5 revenue growth (capped -5..20## Update (Jun 2026) - Live options + new OptiIQ
+- Tradier live options (backend/tradier.py): TRADIER_ENV=production, tokens in backend/.env. Nearest listed expiration to target DTE, chain cached 60s, expirations 6h. engine.build_idea(chain=...) snaps strikes to listed ones, prices from bid/ask mid, real OI/volume/Greeks/ATM IV; per-leg Black-Scholes fallback. Fields: live_quotes, quote_source, quotes_as_of, data_source.options_live. Backtest/smart alerts still use the model.
+- OptiIQ Value replaced: IV = (sum PV of 10y operating cash flow + cash - debt) / shares. Years 1-5 at revenue growth (capped -5..20 pct), 6-10 at half; CAPM discount; no terminal value. Negative CFO returns available=false with reason. Stress test kept.

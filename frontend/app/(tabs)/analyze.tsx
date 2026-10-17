@@ -241,6 +241,7 @@ function OptionsLab({ r }: { r: any }) {
       <View style={styles.strategyRow}>
         <Badge text={r.strategy} kind="brand" />
         <Badge text={`exp ${r.expiration}`} kind="info" />
+        <Badge testID="quote-source-badge" text={r.live_quotes ? `Live · ${r.quote_source}` : "Model estimate"} kind={r.live_quotes ? "success" : "warn"} />
       </View>
 
       {r.passes_filters === false ? <Text style={[styles.rationale, { color: colors.warning }]}>Doesn&apos;t pass your filters: {(r.failed_filters || []).join(", ")}</Text> : null}
@@ -301,7 +302,7 @@ function OptionsLab({ r }: { r: any }) {
                 <Badge text={l.action} kind={l.action === "Buy" ? "success" : "error"} />
                 <Text style={styles.legText}>{l.qty > 1 ? `${l.qty}× ` : ""}{l.type} @ ${l.strike}</Text>
               </View>
-              <Text style={styles.legTheo}>{l.type === "Stock" ? "100 shares" : `mid $${l.mid} · fill $${l.fill}`}</Text>
+              <Text style={styles.legTheo}>{l.type === "Stock" ? "100 shares" : l.live ? `bid $${l.bid} / ask $${l.ask} · fill $${l.fill}` : `mid $${l.mid} · fill $${l.fill}`}</Text>
             </View>
           ))}
         </View>
@@ -315,8 +316,8 @@ function OptionsLab({ r }: { r: any }) {
             <GreekBox label="Theta/day" value={String(r.greeks?.theta ?? "—")} />
             <GreekBox label="Vega" value={String(r.greeks?.vega ?? "—")} />
           </View>
-          <MetricRow label="IV assumed" value={`${((r.iv_assumed ?? 0) * 100).toFixed(0)}%`} />
-          <Text style={styles.disclaimer}>Theoretical values from Black-Scholes with the IV assumption above. Real quotes may differ.</Text>
+          <MetricRow label={r.live_quotes ? "ATM implied vol (live)" : "IV assumed"} value={`${((r.iv_assumed ?? 0) * 100).toFixed(0)}%`} />
+          <Text style={styles.disclaimer}>{r.live_quotes ? `Greeks from ${r.quote_source} (ORATS).` : "Theoretical values from Black-Scholes with the IV assumption above. Real quotes may differ."}</Text>
         </View>
       )}
 

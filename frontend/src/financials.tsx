@@ -225,10 +225,20 @@ const s = StyleSheet.create({
   note: { fontSize: 10, color: colors.muted, fontStyle: "italic", marginTop: spacing.sm, lineHeight: 14 },
 });
 
-/** OptiIQ Value: DCF + residual income blend, multiples sanity check, stress test. */
+/** OptiIQ Value: (Σ PV of 10y operating cash flow + net assets) ÷ shares, stress-tested. */
 export function OptiIQCard({ o }: { o: any }) {
   const [open, setOpen] = useState(false);
-  if (!o) return <Text style={s.empty}>OptiIQ Value needs positive cash flow or book value — not available for this ticker.</Text>;
+  if (!o || !o.available) {
+    return (
+      <View testID="optiiq-unavailable" style={s.iq}>
+        <Text style={s.iqLabel}>OptiIQ Value</Text>
+        <Text style={s.methodName}>Not available</Text>
+        <Text style={s.iqSmall}>{o?.reason || "Not enough data to value this ticker."}</Text>
+      </View>
+    );
+  }
+  const f = o.formula;
+  const maxCf = Math.max(...o.projection.map((p: any) => p.cash_flow), 1);
   const up = o.upside_pct >= 0;
   const confColor = o.confidence === "High" ? colors.success : o.confidence === "Medium" ? colors.warning : colors.error;
   const lo = o.stress.low, hi = o.stress.high;
@@ -257,31 +267,34 @@ export function OptiIQCard({ o }: { o: any }) {
       </View>
       <Text style={s.iqSmall}>${lo} – ${hi} (±{Math.round(o.stress.spread_pct / 2)}%) · teal = OptiIQ, dark = price</Text>
 
-      <Text style={s.iqSection}>Valuation methods</Text>
-      {(o.methods || []).map((m: any) => (
-        <View key={m.key} testID={`optiiq-method-${m.key}`} style={s.methodRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={s.methodName}>{m.name}</Text>
-            <View style={s.wTrack}><View style={[s.wFill, { width: `${m.weight_pct}%` as any }]} /></View>
-          </View>
-          <Text style={[s.methodVal, !m.applicable && { color: colors.muted }]}>{m.applicable ? `$${m.value}` : "skipped"}</Text>
-          <Text style={s.methodW}>{m.weight_pct}%</Text>
-        </View>
-      ))}
+      <Text style={s.iqSection}>How it&apos;s calculated</Text>
+      <View testID="optiiq-formula">
+        <MetricRow label="Σ PV of 10y operating cash flow" value={big(f.pv_cash_flows)} />
+        <MetricRow label="+ Net assets (cash − debt)" value={big(f.net_assets)} />
+        <MetricRow label="÷ Shares outstanding" value={big(f.shares).replace("$", "")} />
+        <MetricRow label="= Intrinsic value / share" value={`$${f.pv_per_share} ${f.net_assets_per_share >= 0 ? "+" : "−"} $${Math.abs(f.net_assets_per_share)} = $${o.value}`} />
+      </View>
       {(o.weight_reasons || []).map((t: string) => <Text key={t} style={s.iqSmall}>• {t}</Text>)}
-      {o.models_gap_pct != null ? <MetricRow label="Spread between methods" value={`${o.models_gap_pct}%`} /> : null}
 
       <Pressable testID="optiiq-details" onPress={() => setOpen((v) => !v)} style={s.iqToggle}>
-        <Text style={s.iqToggleText}>{open ? "Hide" : "Show"} assumptions & stress test</Text>
+        <Text style={s.iqToggleText}>{open ? "Hide" : "Show"} 10-year projection & stress test</Text>
       </Pressable>
       {open ? (
         <View testID="optiiq-breakdown">
-          <MetricRow label="Required return (CAPM)" value={`${o.assumptions.required_return_pct}%`} />
-          <MetricRow label="Growth → terminal" value={`${o.assumptions.growth_pct}% → ${o.assumptions.terminal_growth_pct}%`} />
-          <MetricRow label="FCF (annualized TTM)" value={big(o.assumptions.fcf_ttm)} />
-          <MetricRow label="Net cash" value={big(o.assumptions.net_cash)} />
-          <MetricRow label="Dividend / share · payout" value={`$${o.assumptions.dividend_ps ?? 0} · ${o.assumptions.payout_pct}%`} />
-          <MetricRow label="EPS (TTM) × fair P/E" value={`$${o.assumptions.eps_ttm ?? "—"} × ${o.assumptions.fair_pe}`} />
+          {o.projection.map((p: any) => (
+            <View key={p.year} style={s.methodRow}>
+              <Text style={s.methodW}>Y{p.year}</Text>
+              <View style={{ flex: 1 }}>
+                <View style={s.wTrack}><View style={[s.wFill, { width: `${(p.cash_flow / maxCf) * 100}%` as any }]} /></View>
+              </View>
+              <Text style={s.methodVal}>{big(p.pv)}</Text>
+            </View>
+          ))}
+          <Text style={s.iqSmall}>Bar = projected cash flow · value = present value today</Text>
+          <MetricRow label="Operating cash flow (TTM)" value={big(o.assumptions.cfo_ttm)} />
+          <MetricRow label="Growth yrs 1–5 → 6–10" value={`${o.assumptions.growth_y1_5_pct}% → ${o.assumptions.growth_y6_10_pct}%`} />
+          <MetricRow label="Discount rate (CAPM)" value={`${o.assumptions.discount_rate_pct}%`} />
+          <MetricRow label="Cash · Debt" value={`${big(o.assumptions.cash)} · ${big(o.assumptions.debt)}`} />
           {o.stress.factors.map((f: any) => (
             <MetricRow key={f.name} label={f.name} value={`$${f.low ?? "—"} – $${f.high ?? "—"}`} />
           ))}

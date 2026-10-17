@@ -35,6 +35,7 @@ from market import (
 from market import get_earnings, get_metrics, get_quarterly_financials, get_peers, _cache_get as market_cache_get
 import extras
 import billing
+import tradier
 from engine import (
     STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
@@ -263,7 +264,7 @@ def ideas_for_snapshot(snap: Dict[str, Any], strategies: List[str], dte: int, ac
         for scale in (CREDIT_VARIANTS if STRATEGY_META[s]["credit"] else (1.0,)):
             try:
                 idea = build_idea(snap["ticker"], snap["info"], s, snap["price"], snap["vol"], dte, account_type,
-                                  snap["earnings_date"], snap["dividend_yield"], scale)
+                                  snap["earnings_date"], snap["dividend_yield"], scale, snap.get("chain"))
                 idea["sparkline"] = snap["sparkline"]
                 out.append(idea)
             except Exception as ex:
@@ -271,11 +272,22 @@ def ideas_for_snapshot(snap: Dict[str, Any], strategies: List[str], dte: int, ac
     return out
 
 
-def data_source_block() -> Dict[str, Any]:
+async def attach_chains(client: httpx.AsyncClient, snaps: List[Dict[str, Any]], dte: int) -> None:
+    """Live Tradier chain for each snapshot (nearest listed expiration); None -> model fallback."""
+    chains = await asyncio.gather(*[tradier.live_chain(client, s["ticker"], dte, s["price"]) for s in snaps],
+                                  return_exceptions=True)
+    for s, c in zip(snaps, chains):
+        s["chain"] = c if isinstance(c, dict) else None
+
+
+def data_source_block(idea: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    live = bool(idea and idea.get("live_quotes"))
+    src = idea.get("quote_source") if live else None
     return {
         "quote": "Finnhub (real-time, delayed <= 1 min)",
-        "option_pricing": "Theoretical Black-Scholes mid + modeled slippage",
-        "liquidity": "Model estimate (no real option chain on free tier)",
+        "option_pricing": f"{src} bid/ask mid + modeled slippage" if live else "Theoretical Black-Scholes mid + modeled slippage",
+        "liquidity": f"{src} open interest, volume & spreads" if live else "Model estimate (live chain unavailable)",
+        "options_live": live,
         "fetched_at": now_utc().isoformat(),
     }
 
@@ -499,7 +511,8 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
     strategies = [x for x in candidate_strategies(profile, bias, level) if _tier_allows(tier, x)]
     async with httpx.AsyncClient() as client:
         snaps = await asyncio.gather(*[ticker_snapshot(client, x["ticker"]) for x in pool])
-    snaps = [s for s in snaps if s]
+        snaps = [s for s in snaps if s]
+        await attach_chains(client, snaps, dte)
 
     def compute():
         best, rejected, evaluated = [], {}, 0
@@ -523,7 +536,7 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
     results, rejected, evaluated = await asyncio.to_thread(compute)
     results = results[: req.limit]
     for r in results:
-        r["data_source"] = data_source_block()
+        r["data_source"] = data_source_block(r)
     out = {
         "results": results, "profile": profile, "profile_label": PROFILES[profile]["label"],
         "filters": filters, "account_type": account_type, "account_size": account_size, "bias": bias,
@@ -599,6 +612,8 @@ async def ticker_options(req: TickerOptionsReq, authorization: Optional[str] = H
     tk = req.ticker.upper().strip()
     async with httpx.AsyncClient() as client:
         snap = await ticker_snapshot(client, tk)
+        if snap:
+            await attach_chains(client, [snap], EXP_DAYS.get(req.expiration_range, 30))
     if not snap:
         raise HTTPException(status_code=404, detail=f"No live quote found for {tk}")
     d = user_defaults(user)
@@ -622,7 +637,7 @@ async def ticker_options(req: TickerOptionsReq, authorization: Optional[str] = H
     chosen["passes_filters"] = bool(ok) and chosen in ok
     chosen["failed_filters"] = next(f for i, f in graded if i is chosen)
     chosen["alternatives"] = [compact(i, f) for i, f in sorted(graded, key=lambda x: -x[0]["score"]) if i is not chosen]
-    chosen["data_source"] = data_source_block()
+    chosen["data_source"] = data_source_block(chosen)
     chosen["account_size"] = account_size
     chosen["filters"] = filters
     chosen["options_level"] = level
