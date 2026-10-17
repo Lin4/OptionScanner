@@ -32,6 +32,10 @@ export default function TabsLayout() {
         options={{ title: "Analyze", tabBarIcon: ({ color, size }) => <Icon name="bar-chart-2" size={size} color={color} /> }}
       />
       <Tabs.Screen
+        name="chain"
+        options={{ title: "Chain", tabBarIcon: ({ color, size }) => <Icon name="layers" size={size} color={color} /> }}
+      />
+      <Tabs.Screen
         name="portfolio"
         options={{ title: "Portfolio", tabBarIcon: ({ color, size }) => <Icon name="briefcase" size={size} color={color} /> }}
       />

@@ -183,6 +183,9 @@ async def get_metrics(client: httpx.AsyncClient, ticker: str) -> Dict[str, Any]:
         "cash_per_share_q": m.get("cashPerSharePerShareQuarterly"),
         "book_value_per_share_q": m.get("bookValuePerShareQuarterly"),
         "debt_to_equity_q": m.get("totalDebt/totalEquityQuarterly"),
+        "revenue_growth_5y": m.get("revenueGrowth5Y"),
+        "eps_growth_5y": m.get("epsGrowth5Y"),
+        "eps_growth_ttm": m.get("epsGrowthTTMYoy"),
     }
     _cache_set(key, result)
     return result

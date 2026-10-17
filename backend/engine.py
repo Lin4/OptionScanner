@@ -735,84 +735,48 @@ def default_dcf_inputs(metrics: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------- OptiIQ Value
-OPTIIQ_YEARS = 10
-
-
-def _project_cfo(cfo0: float, g1: float, g2: float, r: float, years: int = OPTIIQ_YEARS) -> List[Dict[str, float]]:
-    """Years 1-5 grow at g1, years 6-10 at g2; each year discounted at r. No terminal value (conservative)."""
-    rows, cf = [], cfo0
-    for t in range(1, years + 1):
-        cf *= 1 + (g1 if t <= 5 else g2)
-        rows.append({"year": t, "cash_flow": cf, "pv": cf / (1 + r) ** t})
-    return rows
-
-
-def optiiq_value(price: float, metrics: Dict[str, Any], financials: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """OptiIQ Value = (Σ PV of next 10 years' operating cash flow + net assets [cash − debt]) ÷ shares outstanding."""
+def optiiq_value(price: float, metrics: Dict[str, Any], financials: List[Dict[str, Any]], sector: str = "") -> Dict[str, Any]:
+    """Intrinsic value per share.
+    Non-financials: 10-year DCF of owner cash flow (max of TTM free cash flow and net income, so growth capex
+    isn't penalised) — growth = median(revenue TTM, revenue 5y, EPS 5y) capped 2–15% for years 1–5, fading to 3%
+    by year 10 — plus a Gordon terminal value at 3%, plus cash − debt, ÷ shares. Discount = CAPM with Blume-adjusted beta.
+    Banks/financials: excess-return model, book value × (ROE − g) / (r − g)."""
     mc = metrics.get("market_cap")
     if not price or not mc:
-        return {"available": False, "reason": "Market cap or price unavailable for this ticker."}
+        return {"available": False, "reason": "Market data unavailable"}
     shares = mc / price
-    q = [x for x in (financials or [])[-4:] if x.get("operating_cash_flow") is not None]
-    if not q:
-        return {"available": False, "reason": "No operating cash flow reported in recent filings."}
-    cfo0 = sum(x["operating_cash_flow"] for x in q) * 4 / len(q)  # trailing 12 months (annualized if <4 quarters)
-    if cfo0 <= 0:
-        return {"available": False, "reason": "Operating cash flow over the last 12 months is negative, so there are no positive "
-                "cash flows to project. This happens with cash-burning growth companies and with banks, whose operating cash flow "
-                "swings with loan and trading activity. OptiIQ Value isn't meaningful until it turns positive."}
-
-    latest = (financials or [{}])[-1]
-    cash, debt = latest.get("cash") or 0.0, latest.get("total_debt") or 0.0
-    net_assets = cash - debt
+    tg = 0.03
     beta = metrics.get("beta") or 1.0
-    r = min(max(RISK_FREE + max(min(beta, 2.5), 0.5) * 0.055, 0.07), 0.13)  # CAPM discount rate
-    g_raw = metrics.get("revenue_growth_ttm")
-    g1 = min(max((g_raw if g_raw is not None else 5.0) / 100, -0.05), 0.20)
-    g2 = g1 / 2
+    r = min(max(RISK_FREE + (0.67 * beta + 0.33) * 0.05, 0.08), 0.12)
 
-    def iv(g1_=g1, g2_=g2, r_=r, m_=1.0):
-        pv = sum(x["pv"] for x in _project_cfo(cfo0 * m_, g1_, g2_, r_))
-        return (pv + net_assets) / shares
+    def done(v: Optional[float]) -> Dict[str, Any]:
+        if not v or v <= 0:
+            return {"available": False, "reason": "Not enough positive earnings or cash flow"}
+        return {"available": True, "value": round(v, 2), "price": round(price, 2), "upside_pct": round((v / price - 1) * 100, 1)}
 
-    value = iv()
-    rows = _project_cfo(cfo0, g1, g2, r)
-    pv_total = sum(x["pv"] for x in rows)
-    if value <= 0:
-        return {"available": False, "reason": "Debt exceeds the present value of 10 years of operating cash flow, "
-                "so the formula gives a negative value per share."}
+    if any(k in sector.lower() for k in ("financ", "bank", "insurance", "capital markets")):
+        bv = metrics.get("book_value_per_share_q")
+        roe = (metrics.get("roe_ttm") or 0) / 100
+        if not bv or roe <= 0:
+            return done(None)
+        roe = min(max(roe, 0.05), 0.25)
+        return done(bv * (roe - tg) / (r - tg))
 
-    factors = [("Growth ±3pp", iv(g1 - 0.03, (g1 - 0.03) / 2), iv(g1 + 0.03, (g1 + 0.03) / 2)),
-               ("Discount rate ±1pp", iv(r_=r + 0.01), iv(r_=r - 0.01)),
-               ("Cash flow ±15%", iv(m_=0.85), iv(m_=1.15))]
-    combos = [iv(g1 + dg, (g1 + dg) / 2, r + dr, 1 + dm) for dg in (-0.03, 0, 0.03) for dr in (-0.01, 0, 0.01) for dm in (-0.15, 0, 0.15)]
-    lo, hi = min(combos), max(combos)
-    spread = (hi - lo) / max(abs(value), 0.01) * 100
-    fragility = "Robust" if spread < 40 else "Moderate" if spread < 80 else "Fragile"
-
-    vals = [x["operating_cash_flow"] for x in q]
-    mean = sum(vals) / len(vals)
-    cv = math.sqrt(sum((v - mean) ** 2 for v in vals) / len(vals)) / abs(mean) if mean else 9
-    stable = len(vals) >= 4 and all(v > 0 for v in vals) and cv < 0.5
-    confidence = "Low" if fragility == "Fragile" or not stable else "Medium" if fragility == "Moderate" else "High"
-
-    reasons = ["Operating cash flow positive in every recent quarter" if stable
-               else "Quarterly operating cash flow is uneven — treat the value with caution",
-               f"Net assets {'add' if net_assets >= 0 else 'subtract'} ${abs(net_assets) / shares:,.2f}/share "
-               f"({'more cash than debt' if net_assets >= 0 else 'more debt than cash'})"]
-
-    rnd = lambda v: round(v, 2) if v is not None else None
-    return {
-        "available": True, "value": rnd(value), "upside_pct": round((value / price - 1) * 100, 1), "price": round(price, 2),
-        "confidence": confidence, "weight_reasons": reasons,
-        "formula": {"pv_cash_flows": rnd(pv_total), "net_assets": rnd(net_assets), "shares": round(shares),
-                    "pv_per_share": rnd(pv_total / shares), "net_assets_per_share": rnd(net_assets / shares)},
-        "projection": [{"year": x["year"], "cash_flow": rnd(x["cash_flow"]), "pv": rnd(x["pv"])} for x in rows],
-        "assumptions": {"years": OPTIIQ_YEARS, "discount_rate_pct": round(r * 100, 2), "growth_y1_5_pct": round(g1 * 100, 1),
-                        "growth_y6_10_pct": round(g2 * 100, 1), "cfo_ttm": rnd(cfo0), "cash": rnd(cash), "debt": rnd(debt)},
-        "stress": {"low": rnd(lo), "high": rnd(hi), "spread_pct": round(spread, 1), "fragility": fragility,
-                   "factors": [{"name": n, "low": rnd(a), "high": rnd(b)} for n, a, b in factors]},
-        "method": ("IV = (Σ PV of future operating cash flows + net assets) ÷ shares outstanding. Trailing-12-month operating cash flow "
-                   "is projected 10 years (years 1–5 at revenue growth, years 6–10 at half that), each year discounted at a CAPM "
-                   "rate; net assets = cash − total debt. No terminal value is added, which keeps the estimate conservative."),
-    }
+    q = (financials or [])[-4:]
+    fcfs = [x["free_cash_flow"] for x in q if x.get("free_cash_flow") is not None]
+    fcf = sum(fcfs) * 4 / len(fcfs) if fcfs else 0.0
+    ni = (metrics.get("eps_ttm") or 0) * shares
+    base = max(fcf, ni)
+    if base <= 0:
+        return done(None)
+    gs = sorted(x for x in (metrics.get("revenue_growth_ttm"), metrics.get("revenue_growth_5y"), metrics.get("eps_growth_5y")) if x is not None)
+    g = gs[len(gs) // 2] / 100 if len(gs) % 2 else (sum(gs[len(gs) // 2 - 1: len(gs) // 2 + 1]) / 200 if gs else 0.05)
+    g = min(max(g, 0.02), 0.15)
+    pv, cf = 0.0, base
+    for t in range(1, 11):
+        cf *= 1 + (g if t <= 5 else g + (tg - g) * (t - 5) / 5)
+        pv += cf / (1 + r) ** t
+    tv = cf * (1 + tg) / (r - tg) / (1 + r) ** 10
+    last = (financials or [{}])[-1] if financials else {}
+    net_assets = (last.get("cash") or 0.0) - (last.get("total_debt") or 0.0)
+    return done((pv + tv + net_assets) / shares)

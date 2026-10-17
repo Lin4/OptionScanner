@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 18: tested new Chain tab (live Tradier option chain + strategy builder) and new OptiIQ value model. Backend: 18/18 pytest cases pass across chain templates, expirations, chain rows, template builder, analyze (with validation), OptiIQ shape across AAPL/MSFT/KO/JPM(bank)/MRNA, and screener/ticker-options regression. Frontend: Chain tab visible as 6th tab, loads AAPL with 'Live \u00b7 Tradier' badge, 23 expiration chips, tap c-ask-<strike> adds a leg, Strategy view shows pnl-chart + pnl-heatmap, Iron Condor template fills 4 legs, qty-plus/remove-leg/clear-legs all working, expiration switch clears legs, MSFT ticker search works. Analyze \u2192 Long-term AAPL shows optiiq-card with ONLY optiiq-value ($266.14) + optiiq-upside (-22.5% vs price) tag; no breakdown/explanation inside the card. No deprecated expo packages detected in files_of_reference.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter18_chain_optiiq.py",
+    "/app/test_reports/pytest/iteration18_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "chain.py: /chain/{ticker} GET route is declared after /chain/{ticker}/expirations - FastAPI matches by registration order so this is correct, but ordering is fragile. Consider explicit path separation.",
+    "chain.py: _exp() rejects malformed dates but accepts any valid ISO date including expirations not listed by Tradier; load_chain surfaces a 502 for those (acceptable but could be 404).",
+    "chain.py: analyze_position recomputes expirations/chain but only uses atm_iv as default - fine; just note the extra Tradier round-trip even when every leg already has iv.",
+    "chain.tsx (357 LOC) is still under the 700-line limit but combines screen + table + builder; could be split as it grows."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter18_chain_optiiq.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None (used existing seeded trader@optiscreen.app)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run chain/analyze tests serially (`-n 0`) because parallel xdist workers hit Finnhub\u2019s 60/min cap and surface spurious 404 'No live quote' errors. Tradier is NOT rate-limited the same way (6-wide semaphore + 60s cache). stock-analysis response is nested under d['result']. OptiIQ response shape is strictly {available, value, price, upside_pct} with optional 'reason' when unavailable.",
+  "rca_of_issue": "No regressions found. Initial run failed due to (a) parallel xdist Finnhub 429s causing /chain/{ticker}/expirations to 404 on spot-quote fetch, and (b) tests looking at d['optiiq'] when the server wraps the payload under d['result']['optiiq']. Both were test-script issues and were fixed."
+}

@@ -182,6 +182,8 @@ export function PeerComparison({ ticker }: { ticker: string }) {
 
 const s = StyleSheet.create({
   iq: { backgroundColor: colors.brandSecondary, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.brandPrimary, padding: spacing.lg, marginBottom: spacing.md },
+  iqRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, marginTop: 4 },
+  iqTag: { fontSize: 12, fontWeight: "800", borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 2, overflow: "hidden" },
   iqTop: { flexDirection: "row", alignItems: "flex-start", marginBottom: spacing.sm },
   iqLabel: { fontSize: 11, fontWeight: "800", color: colors.onBrandSecondary, textTransform: "uppercase", letterSpacing: 1 },
   iqValue: { fontSize: 30, fontWeight: "800", color: colors.onSurface, fontVariant: ["tabular-nums"], letterSpacing: -0.5 },
@@ -225,82 +227,27 @@ const s = StyleSheet.create({
   note: { fontSize: 10, color: colors.muted, fontStyle: "italic", marginTop: spacing.sm, lineHeight: 14 },
 });
 
-/** OptiIQ Value: (Σ PV of 10y operating cash flow + net assets) ÷ shares, stress-tested. */
+/** OptiIQ Value: intrinsic value per share, with % vs current price. */
 export function OptiIQCard({ o }: { o: any }) {
-  const [open, setOpen] = useState(false);
   if (!o || !o.available) {
     return (
       <View testID="optiiq-unavailable" style={s.iq}>
         <Text style={s.iqLabel}>OptiIQ Value</Text>
-        <Text style={s.methodName}>Not available</Text>
-        <Text style={s.iqSmall}>{o?.reason || "Not enough data to value this ticker."}</Text>
+        <Text style={s.iqValue}>—</Text>
+        <Text style={s.iqSmall}>{o?.reason || "Not available"}</Text>
       </View>
     );
   }
-  const f = o.formula;
-  const maxCf = Math.max(...o.projection.map((p: any) => p.cash_flow), 1);
   const up = o.upside_pct >= 0;
-  const confColor = o.confidence === "High" ? colors.success : o.confidence === "Medium" ? colors.warning : colors.error;
-  const lo = o.stress.low, hi = o.stress.high;
-  const span = Math.max(hi, o.price) - Math.min(lo, o.price) || 1;
-  const min = Math.min(lo, o.price);
-  const pos = (v: number) => `${Math.min(100, Math.max(0, ((v - min) / span) * 100))}%` as any;
   return (
     <View testID="optiiq-card" style={s.iq}>
-      <View style={s.iqTop}>
-        <View style={{ flex: 1 }}>
-          <Text style={s.iqLabel}>OptiIQ Value</Text>
-          <Text testID="optiiq-value" style={s.iqValue}>${o.value}</Text>
-          <Text style={[s.iqUp, { color: up ? colors.success : colors.error }]}>{up ? "+" : ""}{o.upside_pct}% vs ${o.price}</Text>
-        </View>
-        <View style={{ alignItems: "flex-end", gap: 4 }}>
-          <Text testID="optiiq-confidence" style={[s.iqBadge, { color: confColor, borderColor: confColor }]}>{o.confidence} confidence</Text>
-          <Text style={s.iqSmall}>Stress: {o.stress.fragility}</Text>
-        </View>
+      <Text style={s.iqLabel}>OptiIQ Value</Text>
+      <View style={s.iqRow}>
+        <Text testID="optiiq-value" style={s.iqValue}>${o.value}</Text>
+        <Text testID="optiiq-upside" style={[s.iqTag, { color: up ? colors.success : colors.error, borderColor: up ? colors.success : colors.error }]}>
+          {up ? "+" : ""}{o.upside_pct}% vs price
+        </Text>
       </View>
-
-      <Text style={s.iqSection}>Stress-test range</Text>
-      <View style={s.rangeTrack}>
-        <View style={[s.rangeFill, { left: pos(lo), width: `${((hi - lo) / span) * 100}%` as any }]} />
-        <View style={[s.rangeMark, { left: pos(o.value), backgroundColor: colors.brandPrimary }]} />
-        <View style={[s.rangeMark, { left: pos(o.price), backgroundColor: colors.onSurface }]} />
-      </View>
-      <Text style={s.iqSmall}>${lo} – ${hi} (±{Math.round(o.stress.spread_pct / 2)}%) · teal = OptiIQ, dark = price</Text>
-
-      <Text style={s.iqSection}>How it&apos;s calculated</Text>
-      <View testID="optiiq-formula">
-        <MetricRow label="Σ PV of 10y operating cash flow" value={big(f.pv_cash_flows)} />
-        <MetricRow label="+ Net assets (cash − debt)" value={big(f.net_assets)} />
-        <MetricRow label="÷ Shares outstanding" value={big(f.shares).replace("$", "")} />
-        <MetricRow label="= Intrinsic value / share" value={`$${f.pv_per_share} ${f.net_assets_per_share >= 0 ? "+" : "−"} $${Math.abs(f.net_assets_per_share)} = $${o.value}`} />
-      </View>
-      {(o.weight_reasons || []).map((t: string) => <Text key={t} style={s.iqSmall}>• {t}</Text>)}
-
-      <Pressable testID="optiiq-details" onPress={() => setOpen((v) => !v)} style={s.iqToggle}>
-        <Text style={s.iqToggleText}>{open ? "Hide" : "Show"} 10-year projection & stress test</Text>
-      </Pressable>
-      {open ? (
-        <View testID="optiiq-breakdown">
-          {o.projection.map((p: any) => (
-            <View key={p.year} style={s.methodRow}>
-              <Text style={s.methodW}>Y{p.year}</Text>
-              <View style={{ flex: 1 }}>
-                <View style={s.wTrack}><View style={[s.wFill, { width: `${(p.cash_flow / maxCf) * 100}%` as any }]} /></View>
-              </View>
-              <Text style={s.methodVal}>{big(p.pv)}</Text>
-            </View>
-          ))}
-          <Text style={s.iqSmall}>Bar = projected cash flow · value = present value today</Text>
-          <MetricRow label="Operating cash flow (TTM)" value={big(o.assumptions.cfo_ttm)} />
-          <MetricRow label="Growth yrs 1–5 → 6–10" value={`${o.assumptions.growth_y1_5_pct}% → ${o.assumptions.growth_y6_10_pct}%`} />
-          <MetricRow label="Discount rate (CAPM)" value={`${o.assumptions.discount_rate_pct}%`} />
-          <MetricRow label="Cash · Debt" value={`${big(o.assumptions.cash)} · ${big(o.assumptions.debt)}`} />
-          {o.stress.factors.map((f: any) => (
-            <MetricRow key={f.name} label={f.name} value={`$${f.low ?? "—"} – $${f.high ?? "—"}`} />
-          ))}
-          <Text style={s.note}>{o.method} Research only — not investment advice.</Text>
-        </View>
-      ) : null}
     </View>
   );
 }

@@ -69,7 +69,13 @@ async def live_chain(client: httpx.AsyncClient, symbol: str, target_dte: int, sp
     cands = [c for c in cands if c[1] >= 1]
     if not cands:
         return None
-    exp, dte = min(cands, key=lambda c: (abs(c[1] - target_dte), c[1]))
+    exp, _ = min(cands, key=lambda c: (abs(c[1] - target_dte), c[1]))
+    return await chain_for(client, symbol, exp, spot)
+
+
+async def chain_for(client: httpx.AsyncClient, symbol: str, exp: str, spot: float) -> Optional[Dict[str, Any]]:
+    """Normalized chain for one listed expiration (cached 60s)."""
+    dte = max((date.fromisoformat(exp) - date.today()).days, 0)
     k = f"chain:{symbol}:{exp}"
     hit = _cget(k, 60)
     if hit is not None:

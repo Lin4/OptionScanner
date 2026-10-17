@@ -36,6 +36,7 @@ from market import get_earnings, get_metrics, get_quarterly_financials, get_peer
 import extras
 import billing
 import tradier
+import chain
 from engine import (
     STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
@@ -733,7 +734,7 @@ async def stock_analysis(req: StockAnalysisReq, authorization: Optional[str] = H
                 "market_cap", "enterprise_value", "trailing_pe", "forward_pe", "peg_ratio",
                 "price_to_sales", "price_to_book", "ev_to_revenue", "ev_to_ebitda")},
             "financials": financials,
-            "optiiq": optiiq_value(price, metrics, financials),
+            "optiiq": optiiq_value(price, metrics, financials, bundle.get("sector") or UNIVERSE_INDEX.get(tk, {}).get("sector") or ""),
             "financials_source": "SEC 10-Q/10-K filings via Finnhub (quarterly values derived from year-to-date figures)",
             "buy_point": valuation["buy_zone_below"] if valuation else None,
             "sell_point": valuation["sell_zone_above"] if valuation else None,
@@ -1162,6 +1163,8 @@ EXTRAS: Dict[str, Any] = extras.register(
     api_router, db=db, get_user=get_user_from_token, user_defaults=user_defaults, scan_for_user=_scan_for_user,
     send_push=send_push, universe=UNIVERSE, universe_index=UNIVERSE_INDEX, logger=logger, ticker_snapshot=ticker_snapshot,
 )
+
+chain.register(api_router, get_user=get_user_from_token, get_quote=get_quote)
 
 
 app.include_router(api_router)
