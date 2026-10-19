@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 23 — OptiScore pipeline (Scan/Rank/Plan/Validate/Track) verified. Backend: 14/14 pytest passed (/app/backend/tests/test_iter23_optiscore.py). POST /api/screener/ticker-options for AAPL/MSFT/SPY/JPM returns full OptiScore shape {optiscore int 0-100, optiscore_grade, pillars.expected_return/risk/premium_quality/user_fit, plan.entry/take_profit/stop/invalidation/time_exit/sizing, validation.backtest/costs/stress, scan.liquidity/volatility/options_activity/fundamentals/trend/flags} — also OK with strategy='Long Call' and expiration_range 'week' and '3months'. POST /api/screener/best-options {profile:'low_low', period:'month'} returns stats.universe=40, each result carries optiscore/plan/validation/scan and results are sorted desc by optiscore. 3 back-to-back scans all returned 200 in ~15s each. GET /api/track-record returns live.calibration.active + min_results_per_bucket=30, 6 progress buckets with n counts; backtest.status=ready with accuracy{brier,calibration_error,buckets,verdict} and risk_adjusted{profit_factor,sharpe,max_drawdown,equity[]}. POST /api/screener/stock-analysis purposes day/swing/long all 200; day & swing trade_plan has entry_trigger/invalidation/time_stop. Backend 429 traffic from Polygon stays low — no 429s in the last ~10 min window during tests. Frontend (390x844, mobile): logged in as trader@optiscreen.app, Analyze → Options Lab → AAPL → analyze-run: hero-pop shows POP 71.4%, max loss formatted as '−$1,253' (minus-sign hyphen, no '$-'); pipeline-strip with 5 steps (pipeline-scan/rank/plan/validate/track) present; optiscore-card and optiscore-value render with 4 pillar-* rows (expected_return, risk, premium_quality, user_fit); plan-card OPEN by default (plan-rr + plan-sizing visible); validation-card and scan-card COLLAPSED by default (verdict/backtest/equity/costs/stress and scan-ivrank only appear after tapping validation-card-toggle / scan-card-toggle). Strategy chips Long Call and Iron Condor both re-run without crash. Swing lab: stock-trigger box present. Discover: scan returns 5 cards, each with optiscore-pill and disc-plan-<TICKER>; tapping a result opens Analyze with the correct ticker param. Track-record: Live tab shows track-calibration ('Auto-calibration warming up') with 6 cal-progress rows; Backtest tab (track-tab-backtest) shows track-accuracy, track-calibration-chart (SVG dots) and track-risk-adjusted with track-equity curve; money formatting consistent '$106,073' / '−$17,529' / '−$62,337' with proper minus-sign — no '$-' sequences found. Regression: Chain tab loads AAPL chain-table OK; Portfolio and Alerts tabs load without red screens or errors. No deprecated expo packages found (no expo-av/expo-barcode-scanner/expo-background-fetch), no React Native issues observed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter23_optiscore.py",
+    "/app/test_reports/pytest/iteration23_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:704 ideas_for_snapshot is invoked via asyncio.to_thread with a long per-ticker chain + fundamentals snapshot; wall time for /screener/ticker-options is 3-6s per call (observed) and this spawns a chain fetch for every call because snap.chain is fetched inside the endpoint — consider caching snap per (ticker, expiration_days) for ~60s so repeated analyze requests on the same ticker reuse the chain.",
+    "extras.py:321 /track-record returns settled picks with sort by settled_at desc; the top-level 'live.settled' slices to [:30] but 'live.open' returns ALL open rows (up to 50 via the explicit limit) — if the universe grows past 50 open picks per cycle users won't see newer ones on the Live tab until some settle. Low priority.",
+    "quality.tsx:142 plan-card uses initiallyOpen=true and validation-card/scan-card default to collapsed — matches the user-requested glanceable UX. Good.",
+    "backend/market.py rate limiter: observed polygon 429s dropped to 0 across the 3 back-to-back scan test window; however the error log still accumulates ~hundreds/day of Polygon 429s from the universe warm-up loop. Not blocking (candle_cache absorbs them) but worth watching if universe expands beyond 40 tickers.",
+    "server.py:682 ticker_options re-fetches iv_history on every request (await iv_history([tk])) — this is a 1-year lookback per call. Caching to Mongo iv_history_cache with a 1h TTL would cut external API load further."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter23_optiscore.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100%"},
+  "seed_data_creation": "No seed data created. Trader account used read-only for scan/analyze. Trader plan confirmed = advance.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL is https://optionscope.preview.emergentagent.com (from EXPO_PUBLIC_BACKEND_URL). Login API returns session_token (not token). /api/screener/stock-analysis response is wrapped under result{...} key — all stock fields including trade_plan live inside result. Track-record backtest was already in 'ready' state during test run (observed WIN RATE 83.7%, TRADES 1611, TOTAL P&L $106,073), so TestTrackRecord asserted the full accuracy+risk_adjusted shape successfully. The Backtest tab testID is track-tab-backtest (NOT tab-backtest). Hero-pop max loss is formatted with the Unicode minus sign (U+2212) '−$', not the ASCII hyphen; selectors matching '-$' may miss it. Discover scanner currently returns 5 cards from a 40-ticker universe with 37 scanned (3 filtered out upstream).",
+  "rca_of_issue": "N/A — no bugs found. All acceptance criteria passed on first run after a trivial test-script fix (stock-analysis response wrapper access)."
+}

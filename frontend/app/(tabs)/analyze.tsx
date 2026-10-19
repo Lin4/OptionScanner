@@ -15,6 +15,8 @@ import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate, usePlan } from "@/src/plans";
 import { ACCOUNTS, Chips, Label, OptionInsights, accountLabel } from "@/src/screen";
 import { FinancialsChart, ValuationMeasures, PeerComparison, BalanceSheet, OptiIQCard } from "@/src/financials";
+import { OptiScoreCard, PlanCard, ValidationCard, ScanCard, PipelineStrip } from "@/src/quality";
+import { money } from "@/src/quantcharts";
 
 const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Sell Put", "Sell Call", "Short Strangle"];
 
@@ -250,20 +252,27 @@ function OptionsLab({ r }: { r: any }) {
         <View style={styles.heroBox}>
           <Text style={styles.heroLabel}>Max profit</Text>
           <Text style={[styles.heroVal, { color: colors.success }]}>
-            {r.max_profit != null ? `$${r.max_profit}` : "Unlimited"}
+            {r.max_profit != null ? money(r.max_profit) : "Unlimited"}
           </Text>
         </View>
         <View style={styles.heroBox}>
           <Text style={styles.heroLabel}>Max loss</Text>
           <Text style={[styles.heroVal, { color: colors.error }]}>
-            {r.max_loss != null ? `$${r.max_loss}` : "undefined"}
+            {r.max_loss != null ? money(-Math.abs(r.max_loss)) : "Undefined"}
           </Text>
         </View>
-        <View style={styles.heroBox}>
-          <Text style={styles.heroLabel}>POP</Text>
-          <Text style={styles.heroVal}>{r.pop}%</Text>
+        <View testID="hero-pop" style={styles.heroBox}>
+          <Text style={styles.heroLabel}>{r.pop_calibrated != null ? "POP (calibrated)" : "POP"}</Text>
+          <Text style={styles.heroVal}>{r.pop_calibrated ?? r.pop}%</Text>
+          {r.pop_calibrated != null ? <Text style={styles.legTheo}>model {r.pop}%</Text> : null}
         </View>
       </View>
+
+      <PipelineStrip r={r} />
+      <OptiScoreCard r={r} />
+      <PlanCard plan={r.plan} pop={r.pop_calibrated ?? r.pop} />
+      <ValidationCard v={r.validation} pop={r.pop} />
+      <ScanCard scan={r.scan} />
 
       {/* Payoff chart */}
       <Text style={styles.sectionLabel}>Payoff at expiration</Text>
@@ -408,6 +417,31 @@ function TradePlan({ r }: { r: any }) {
       </View>
       <MetricRow label="Reward : risk" value={`${p.reward_risk}:1`} />
       <MetricRow label="ATR (14)" value={`$${p.atr}`} />
+      {p.entry_trigger ? (
+        <View testID="stock-trigger" style={styles.triggerBox}>
+          <View style={styles.triggerRow}>
+            <Icon name="log-in" size={14} color={colors.success} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.triggerTitle}>Entry trigger · {p.entry_trigger.type}</Text>
+              <Text style={styles.triggerText}>{p.entry_trigger.text}</Text>
+            </View>
+          </View>
+          <View style={styles.triggerRow}>
+            <Icon name="alert-octagon" size={14} color={colors.error} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.triggerTitle}>Invalidation</Text>
+              <Text style={styles.triggerText}>{p.invalidation.text}</Text>
+            </View>
+          </View>
+          <View style={styles.triggerRow}>
+            <Icon name="clock" size={14} color={colors.onSurfaceSecondary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.triggerTitle}>Time stop</Text>
+              <Text style={styles.triggerText}>{p.time_stop}</Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
       <Text style={styles.sectionLabel}>Position sizing</Text>
       <MetricRow label="Shares" value={String(p.shares)} />
       <MetricRow label="Position value" value={`$${p.position_value.toLocaleString()}`} />
@@ -603,4 +637,8 @@ const styles = StyleSheet.create({
   ratings: { flexDirection: "row", height: 32, borderRadius: radius.md, overflow: "hidden", gap: 2 },
   ratingBar: { alignItems: "center", justifyContent: "center" },
   ratingText: { color: "#FFFFFF", fontWeight: "700", fontSize: 11 },
+  triggerBox: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginTop: spacing.md, gap: spacing.md },
+  triggerRow: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-start" },
+  triggerTitle: { fontSize: 12, fontWeight: "800", color: colors.onSurface, textTransform: "capitalize" },
+  triggerText: { fontSize: 12, color: colors.onSurfaceSecondary, marginTop: 2, lineHeight: 17 },
 });

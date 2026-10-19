@@ -16,7 +16,7 @@ from options_math import bs_greeks, norm_cdf
 RISK_FREE = 0.045
 FEE_PER_CONTRACT = 0.65
 SLIPPAGE_FRACTION = 0.25  # fraction of the bid-ask spread paid vs mid on every leg
-HIGH_LIQ = {"SPY", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL", "AMD", "QQQ", "IWM"}
+HIGH_LIQ = {"SPY", "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL", "AMD", "QQQ", "IWM", "NFLX", "AVGO", "PLTR", "BAC", "INTC", "MU"}
 ACCOUNT_TYPES = ("cash", "ira", "reg_t", "portfolio_margin")
 
 # level = broker options-approval level needed (1 covered/CSP, 2 long options, 3 spreads, 4 naked)
@@ -370,6 +370,25 @@ def probability_and_ev(legs: List[Dict], S: float, premium_net: float, fees: flo
             "ev_method": "Expected P&L under the historical-volatility distribution"}
 
 
+def iv_at_strike(chain: Optional[Dict[str, Any]], K: float, S: float) -> Optional[float]:
+    """Smile-interpolated implied vol at strike K from the OTM side of the live chain (puts below spot, calls above)."""
+    if not chain:
+        return None
+    side = chain["puts"] if K < S else chain["calls"]
+    pts = sorted((k, (o.get("greeks") or {}).get("mid_iv") or (o.get("greeks") or {}).get("smv_vol")) for k, o in side.items())
+    pts = [(k, v) for k, v in pts if v and 0.01 < v < 5 and (side[k].get("bid") or 0) > 0]
+    if not pts:
+        return None
+    if K <= pts[0][0]:
+        return pts[0][1]
+    if K >= pts[-1][0]:
+        return pts[-1][1]
+    for (k0, v0), (k1, v1) in zip(pts, pts[1:]):
+        if k0 <= K <= k1:
+            return v0 + (v1 - v0) * (K - k0) / ((k1 - k0) or 1)
+    return None
+
+
 def prob_itm(S: float, K: float, iv: float, dte: int, call: bool) -> float:
     T = max(dte, 1) / 365
     d2 = (math.log(S / K) + (RISK_FREE - 0.5 * iv * iv) * T) / (iv * math.sqrt(T))
@@ -493,7 +512,8 @@ def build_idea(ticker: str, info: Dict[str, Any], name: str, S: float, vol: Dict
                    "estimated": False}
     else:
         exp_date = (datetime.now(timezone.utc) + timedelta(days=dte)).strftime("%Y-%m-%d")
-    iv, hv = vol["iv"], vol["hv20"]
+    iv = vol["iv"]
+    hv = 0.5 * vol["hv20"] + 0.5 * (vol.get("hv60") or vol["hv20"])  # realized vol for EV: blend avoids a quiet/noisy 20-day window
     legs = build_legs(name, S, iv, dte, exp_date, scale)
     if chain:
         legs = snap_legs(legs, chain, S, exp_date)
@@ -501,15 +521,18 @@ def build_idea(ticker: str, info: Dict[str, Any], name: str, S: float, vol: Dict
     premium_net = pricing["net_fill"]
     fees = pricing["fees"]
     stats = payoff_stats(legs, S, premium_net, fees)
-    prob = probability_and_ev(legs, S, premium_net, fees, iv, hv, dte)
+    # POP with the volatility the market prices at the breakevens (skew-aware) instead of one ATM number
+    be_ivs = [v for v in (iv_at_strike(chain, b, S) for b in stats["breakevens"]) if v] if chain else []
+    pop_iv = sum(be_ivs) / len(be_ivs) if be_ivs else iv
+    prob = probability_and_ev(legs, S, premium_net, fees, pop_iv, hv, dte)
+    if be_ivs:
+        prob["pop_method"] = "Lognormal distribution using the live implied vol at the breakeven strikes (skew-aware), net of fees"
     coll = collateral_by_account(name, legs, S, premium_net, stats["max_loss"], stats["max_profit"], dte)
     liq = aggregate_liquidity(legs, premium_net)
     events = events_and_assignment(name, legs, S, iv, dte, exp_date, earnings_date, dividend_yield)
     sel = coll.get(account_type) or coll["reg_t"]
     net_greeks = {k: round(sum(l.get(k, 0) for l in legs), 3) for k in ("delta", "gamma", "theta", "vega")}
     ev_roc = (prob["expected_value"] / sel["collateral"] * 100) if sel.get("collateral") else None
-    liq_score = {"High": 1.0, "Medium": 0.6, "Low": 0.1}.get(liq.get("grade"), 0.5)
-    score = round((max(min(ev_roc or 0, 20), -20)) * 2 + prob["pop"] * 0.3 + liq_score * 10, 2)
 
     idea = {
         "ticker": ticker, "name": info.get("name", ticker), "sector": info.get("sector", "Unknown"),
@@ -531,9 +554,9 @@ def build_idea(ticker: str, info: Dict[str, Any], name: str, S: float, vol: Dict
         "collateral_margin": coll["reg_t"].get("collateral"),
         "annual_pct_no_margin": coll["cash"].get("annualized_pct") if coll["cash"]["allowed"] else coll["reg_t"].get("annualized_pct"),
         "annual_pct_margin": coll["reg_t"].get("annualized_pct"),
-        "greeks": net_greeks, "iv_assumed": iv,
+        "greeks": net_greeks, "iv_assumed": iv, "pop_iv": round(pop_iv, 4), "scale": scale,
+        "ev_roc_pct": round(ev_roc, 2) if ev_roc is not None else None,
         "scenario_matrix": scenario_grid(legs, S, iv, dte, fees),
-        "score": score,
         "live_quotes": pricing["live"],
         "quote_source": (chain or {}).get("source") if pricing["live"] else "Black-Scholes model",
         "quotes_as_of": (chain or {}).get("as_of") if pricing["live"] else None,
@@ -542,8 +565,196 @@ def build_idea(ticker: str, info: Dict[str, Any], name: str, S: float, vol: Dict
                         "slippage": pricing["note"],
                         "pricing_note": "Real bid/ask from the listed chain." if pricing["live"] else "Theoretical mid prices. Real option quotes may differ."},
     }
+    idea["pillars"] = market_pillars(idea)
+    apply_fit(idea, None, None, None)
     idea["why"], idea["risks"] = explain_deterministic(idea)
     return idea
+
+
+# ---------------------------------------------------------------- OptiScore (0-100)
+OPTISCORE_WEIGHTS = {"expected_return": 0.35, "risk": 0.25, "premium_quality": 0.20, "user_fit": 0.20}
+
+
+def _clip(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
+    return max(lo, min(hi, x))
+
+
+def market_pillars(i: Dict[str, Any]) -> Dict[str, float]:
+    """Expected return, risk and premium quality — each 0-100, independent of the user."""
+    dte = max(i["expiration_days"], 1)
+    ev_pct = i.get("ev_roc_pct") or 0.0
+    er = _clip(50 + ev_pct * 4 * (30 / dte) ** 0.25)  # EV per $ at risk (+12.5% -> 100), gently normalised across horizons
+
+    if i["max_loss"] is None:
+        rr_score = 20.0
+    else:
+        gain = i["max_profit"] if i["max_profit"] is not None else abs(i["max_loss"]) * 2
+        rr = abs(i["max_loss"]) / max(gain, 1.0)
+        rr_score = 100.0 if rr <= 1 else _clip(100 - 40 * math.log(rr) / math.log(3))
+    pop_score = _clip((i["pop"] - 50) * 2)
+    risk = 0.5 * rr_score + 0.5 * pop_score
+    ev = i["events"]
+    risk -= 15 if ev.get("earnings_in_window") else 0
+    risk -= 10 if ev.get("assignment_risk") == "High" else 0
+    risk -= 10 if ev.get("pin_risk") else 0
+
+    vol = i["volatility"]
+    ratio = (i["iv_assumed"] / vol["hv20"]) if vol.get("hv20") else 1.0
+    vrp = _clip((ratio - 0.8) / 0.6 * 100) if i["premium_type"] == "credit" else _clip((1.3 - ratio) / 0.5 * 100)
+    liq = i["liquidity"] or {}
+    spread_s = _clip(100 - (liq.get("spread_pct_of_premium") or 100) * 4)
+    oi = liq.get("min_open_interest") or 0
+    oi_s = _clip(math.log10(max(oi, 1)) / 3 * 100)  # 1000+ OI -> 100
+    liq_s = 0.6 * spread_s + 0.4 * oi_s
+    if liq.get("estimated", True):
+        liq_s = min(liq_s, 60.0)
+    pq = 0.5 * vrp + 0.5 * liq_s
+    return {"expected_return": round(er, 1), "risk": round(_clip(risk), 1), "premium_quality": round(pq, 1),
+            "detail": {"ev_pct_of_risk": round(ev_pct, 2), "reward_risk_score": round(rr_score, 1), "pop_score": round(pop_score, 1),
+                       "iv_hv_ratio": round(ratio, 2), "vrp_score": round(vrp, 1), "liquidity_score": round(liq_s, 1)}}
+
+
+def apply_history(i: Dict[str, Any]) -> None:
+    """Blend the own-history backtest into the expected-return pillar (≥10 trades) and recompute OptiScore."""
+    bt = ((i.get("validation") or {}).get("backtest") or {})
+    h = (bt.get("managed") or bt.get("hold_to_expiry") or {})
+    if (h.get("trades") or 0) < 10:
+        return
+    pf = h.get("profit_factor")
+    hist = 100.0 if pf is None and h["avg_pnl"] > 0 else _clip(((pf or 0) - 0.5) * 100)
+    p = i["pillars"]
+    p["expected_return"] = round(0.6 * p["expected_return"] + 0.4 * hist, 1)
+    p.setdefault("detail", {})["history_score"] = round(hist, 1)
+    total = sum(p[k] * w for k, w in OPTISCORE_WEIGHTS.items())
+    i["optiscore"] = int(round(total))
+    i["optiscore_grade"] = "Excellent" if total >= 80 else "Strong" if total >= 65 else "Fair" if total >= 50 else "Weak"
+    i["score"] = round(total, 2)
+
+
+def apply_fit(i: Dict[str, Any], profile: Optional[str], account_size: Optional[float], filters: Optional[Dict[str, Any]]) -> None:
+    """User-fit pillar + final OptiScore. Without user context fit is neutral (50)."""
+    reasons = []
+    if not profile or not account_size:
+        fit = 50.0
+    else:
+        prof_s = 100.0 if profile in STRATEGY_META[i["strategy"]]["profiles"] else 60.0
+        if prof_s < 100:
+            reasons.append("Strategy sits outside your chosen risk profile")
+        cap = i.get("collateral") or abs(i["max_loss"] or 0) or i["premium"] * 100
+        u = cap / max(account_size, 1) * 100
+        cap_s = 100.0 if u <= 5 else _clip(100 - (u - 5) * 2)
+        if u > 25:
+            reasons.append(f"Uses {u:.0f}% of your account as collateral")
+        lim = (filters or {}).get("max_loss_pct") or PROFILES.get(profile, PROFILES["low_low"])["max_loss_pct"]
+        if i["max_loss"] is None or i["strategy"] in ASSIGNMENT_STRATS:
+            loss_s = 40.0 if i["max_loss"] is None else 70.0
+        else:
+            lp = abs(i["max_loss"]) / max(account_size, 1) * 100
+            loss_s = 100.0 if lp <= lim * 0.5 else _clip(100 - (lp / lim - 0.5) * 80)
+        fit = (prof_s + cap_s + loss_s) / 3
+    p = {**i["pillars"], "user_fit": round(fit, 1)}
+    total = sum(p[k] * w for k, w in OPTISCORE_WEIGHTS.items())
+    i["pillars"] = p
+    i["optiscore"] = int(round(total))
+    i["optiscore_grade"] = "Excellent" if total >= 80 else "Strong" if total >= 65 else "Fair" if total >= 50 else "Weak"
+    i["fit_reasons"] = reasons
+    i["score"] = round(total, 2)
+
+
+# ---------------------------------------------------------------- management plan
+RISK_PCT_BY_PROFILE = {"low_low": 1.0, "low_high": 2.0, "high_high": 2.0}
+
+
+def management_plan(i: Dict[str, Any], account_size: float, risk_pct: Optional[float] = None, profile: str = "low_low") -> Dict[str, Any]:
+    """Entry limit, take-profit, stop, invalidation level, time exit and risk-budget sizing for one idea."""
+    risk_pct = risk_pct or RISK_PCT_BY_PROFILE.get(profile, 1.0)
+    credit = i["premium_type"] == "credit"
+    mid = abs(i["pricing"]["net_mid"])
+    worst = abs(i["pricing"]["net_fill"])
+    prem = i["premium"]
+    fees_rt = i["pricing"]["fees"] * 2
+    S, dte = i["price"], max(i["expiration_days"], 1)
+    em = S * i["iv_assumed"] * math.sqrt(dte / 365)
+    exp = date.fromisoformat(i["expiration"])
+    shorts = [l for l in i["legs"] if _is_opt(l) and _sign(l) < 0]
+    longs = [l for l in i["legs"] if _is_opt(l) and _sign(l) > 0]
+    ml = abs(i["max_loss"]) if i["max_loss"] is not None else None
+
+    if credit:
+        tp_val, tp_gain = prem * 0.5, prem * 0.5 * 100
+        stop_loss = min(prem * 2 * 100, ml) if ml else prem * 2 * 100
+        stop_val = prem + stop_loss / 100
+        tp_text = f"Buy back at ${tp_val:.2f} (keep 50% of the credit, ≈ +${tp_gain - fees_rt:,.0f})"
+        stop_text = f"Buy back if the price reaches ${stop_val:.2f} (loss ≈ −${stop_loss + fees_rt:,.0f}, 2× credit)"
+        entry_text = f"Sell for ${mid:.2f} credit or better; don't accept less than ${worst:.2f}"
+        put_k = max((float(l["strike"]) for l in shorts if l["type"] == "Put"), default=None)
+        call_k = min((float(l["strike"]) for l in shorts if l["type"] == "Call"), default=None)
+        inv = []
+        if put_k:
+            inv.append(f"closes below the ${put_k:g} short put")
+        if call_k:
+            inv.append(f"closes above the ${call_k:g} short call")
+        inv_text = "Exit if the stock " + " or ".join(inv) if inv else "Exit if the stock breaks the breakeven"
+        inv_levels = {"below": put_k, "above": call_k}
+        left = 21 if dte >= 40 else 7 if dte >= 14 else 1
+        exit_day = exp - timedelta(days=left)
+        time_text = (f"Close by {exit_day.isoformat()} ({left} days before expiration) — gamma risk rises after that"
+                     if left > 1 else f"Close by {exit_day.isoformat()} — don't hold short options into expiration day")
+    else:
+        if i["max_profit"] is not None:
+            tp_gain = min(prem * 100, i["max_profit"] * 0.5)
+        else:
+            tp_gain = prem * 100
+        tp_val = prem + tp_gain / 100
+        stop_loss = prem * 0.5 * 100
+        stop_val = prem * 0.5
+        tp_text = f"Sell at ${tp_val:.2f} (≈ +${tp_gain - fees_rt:,.0f})"
+        stop_text = f"Sell if the price falls to ${stop_val:.2f} (lose half the debit, ≈ −${stop_loss + fees_rt:,.0f})"
+        entry_text = f"Pay ${mid:.2f} or less; don't pay more than ${worst:.2f}"
+        bias = STRATEGY_META[i["strategy"]]["bias"][0]
+        if bias == "bullish":
+            lvl = round(S - 0.5 * em, 2)
+            inv_text, inv_levels = f"Exit if the stock closes below ${lvl:g} (half an expected move down)", {"below": lvl, "above": None}
+        elif bias == "bearish":
+            lvl = round(S + 0.5 * em, 2)
+            inv_text, inv_levels = f"Exit if the stock closes above ${lvl:g} (half an expected move up)", {"below": None, "above": lvl}
+        else:
+            ks = sorted(float(l["strike"]) for l in longs) or [S]
+            inv_text = (f"Exit if the stock leaves ${ks[0]:g}–${ks[-1]:g}" if "Butterfly" in i["strategy"]
+                        else f"Exit if the stock hasn't moved ±${0.5 * em:.2f} by half-time")
+            inv_levels = {"below": ks[0] if "Butterfly" in i["strategy"] else None, "above": ks[-1] if "Butterfly" in i["strategy"] else None}
+        exit_day = date.today() + timedelta(days=max(1, dte // 2))
+        time_text = f"If the target isn't hit by {exit_day.isoformat()} (half the time), close — time decay accelerates"
+
+    budget = account_size * risk_pct / 100
+    per_contract = stop_loss + fees_rt
+    coll = i.get("collateral") or (ml or prem * 100)
+    by_risk = int(budget // per_contract) if per_contract > 0 else 0
+    by_capital = int((account_size * 0.5) // coll) if coll else by_risk
+    contracts = max(0, min(by_risk, by_capital))
+    notes = []
+    if contracts == 0:
+        notes.append(f"One contract risks ${per_contract:,.0f} at the stop — more than your {risk_pct}% budget (${budget:,.0f}). Skip or reduce size elsewhere.")
+    if i["max_loss"] is None or i["strategy"] in ASSIGNMENT_STRATS:
+        notes.append("Gaps or assignment can blow through the stop — the true worst case is larger than the planned loss.")
+    if i["events"].get("earnings_in_window"):
+        notes.append("Earnings fall before expiration — plan to exit before the report or size down.")
+    entry_conditions = [entry_text, f"Only enter while the stock is within ±1% of ${S:,.2f} (re-price otherwise)"]
+    if credit and i["volatility"].get("iv_rank", 0) < 30:
+        entry_conditions.append("IV rank is below 30 — premium is thin; waiting for higher IV improves the edge")
+    return {
+        "entry": {"limit": round(mid, 2), "worst_acceptable": round(worst, 2), "conditions": entry_conditions},
+        "take_profit": {"option_price": round(tp_val, 2), "gain": round(tp_gain - fees_rt, 2), "text": tp_text},
+        "stop": {"option_price": round(stop_val, 2), "loss": round(stop_loss + fees_rt, 2), "text": stop_text},
+        "invalidation": {"text": inv_text, "levels": inv_levels},
+        "time_exit": {"date": exit_day.isoformat(), "text": time_text},
+        "sizing": {"risk_pct": risk_pct, "risk_budget": round(budget, 2), "planned_loss_per_contract": round(per_contract, 2),
+                   "contracts": contracts, "capital_used": round(contracts * coll, 2),
+                   "planned_loss_total": round(contracts * per_contract, 2), "account_size": account_size},
+        "notes": notes,
+        "rules": {"credit": credit, "tp_gain": tp_gain, "stop_loss": stop_loss,
+                  "time_exit_days_left": (21 if dte >= 40 else 7 if dte >= 14 else 1) if credit else max(1, dte - dte // 2)},
+    }
 
 
 def explain_deterministic(i: Dict[str, Any]) -> Tuple[List[str], List[str]]:
@@ -626,7 +837,7 @@ def candidate_strategies(profile: str, bias: str, max_level: int = 4) -> List[st
 
 def compact(i: Dict[str, Any], fails: Optional[List[str]] = None) -> Dict[str, Any]:
     return {"strategy": i["strategy"], "pop": i["pop"], "roc_pct": i["roc_pct"], "max_profit": i["max_profit"],
-            "max_loss": i["max_loss"], "premium_net": i["premium_net"], "score": i["score"],
+            "max_loss": i["max_loss"], "premium_net": i["premium_net"], "score": i["score"], "optiscore": i.get("optiscore"),
             "liquidity_grade": i["liquidity"].get("grade"), "passes": not fails, "failed": fails or []}
 
 
@@ -671,6 +882,26 @@ def trade_plan(candles: List[Dict], price: float, support: float, resistance: fl
     capped = False
     if shares * entry > account_size:
         shares, capped = int(account_size // entry), True
+    hi5 = max((c["h"] for c in candles[-5:]), default=price)
+    lo5 = min((c["l"] for c in candles[-5:]), default=price)
+    if direction == "long":
+        if support > 0 and 0 <= entry - support <= a:
+            trig = {"type": "pullback", "price": round(support + 0.25 * a, 2),
+                    "text": f"Buy near support: a bullish daily close between ${support:.2f} and ${support + 0.5 * a:.2f}"}
+        else:
+            trig = {"type": "breakout", "price": round(hi5 + 0.1 * a, 2),
+                    "text": f"Buy on a break above the 5-day high: trade through ${hi5 + 0.1 * a:.2f}"}
+        inv = {"price": round(stop, 2), "text": f"Setup is invalid on a close below ${stop:.2f}" + (" or below the 50-day trend line" if purpose != "day" else "")}
+    else:
+        if resistance > entry and 0 <= resistance - entry <= a:
+            trig = {"type": "rejection", "price": round(resistance - 0.25 * a, 2),
+                    "text": f"Short near resistance: a bearish daily close between ${resistance - 0.5 * a:.2f} and ${resistance:.2f}"}
+        else:
+            trig = {"type": "breakdown", "price": round(lo5 - 0.1 * a, 2),
+                    "text": f"Short on a break below the 5-day low: trade through ${lo5 - 0.1 * a:.2f}"}
+        inv = {"price": round(stop, 2), "text": f"Setup is invalid on a close above ${stop:.2f}"}
+    time_stop = ("Exit by the close — no overnight holds" if purpose == "day"
+                 else "If neither target nor stop is hit within 10 trading days, exit — the thesis has stalled")
     logic.append(f"Position size = ${budget:,.0f} risk budget ({risk_pct}% of ${account_size:,.0f}) ÷ ${risk:.2f} risk/share = {shares} shares"
                  + (" (capped by account size)." if capped else "."))
     return {
@@ -679,6 +910,7 @@ def trade_plan(candles: List[Dict], price: float, support: float, resistance: fl
         "shares": shares, "position_value": round(shares * entry, 2), "max_loss_dollars": round(shares * risk, 2),
         "potential_gain_dollars": round(shares * abs(target - entry), 2), "risk_pct": risk_pct,
         "account_size": account_size, "capped_by_buying_power": capped, "logic": logic,
+        "entry_trigger": trig, "invalidation": inv, "time_stop": time_stop,
     }
 
 

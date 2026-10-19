@@ -1,5 +1,6 @@
 """Track record (live + backtest), smart 70%+ setup alerts, and level-up lessons."""
 from __future__ import annotations
+import math
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone, date
@@ -53,6 +54,83 @@ def _stats(rows: List[Dict]) -> Dict[str, Any]:
     }
 
 
+def risk_adjusted(rows: List[Dict]) -> Optional[Dict[str, Any]]:
+    """Profit factor, Sharpe-style ratio, max drawdown, return on risk, expectancy (chronological order)."""
+    if len(rows) < 2:
+        return None
+    rows = sorted(rows, key=lambda r: str(r.get("exit_date") or r.get("settled_at") or ""))
+    pnl = [r["pnl"] for r in rows]
+    n = len(pnl)
+    mean = sum(pnl) / n
+    sd = math.sqrt(sum((x - mean) ** 2 for x in pnl) / (n - 1)) or 1e-9
+    downs = [x for x in pnl if x < 0]
+    dsd = math.sqrt(sum(x * x for x in downs) / len(downs)) if downs else None
+    gw, gl = sum(x for x in pnl if x > 0), abs(sum(downs))
+    cum = peak = dd = 0.0
+    for x in pnl:
+        cum += x
+        peak = max(peak, cum)
+        dd = min(dd, cum - peak)
+    risk = sum(abs(r.get("max_loss") or 0) for r in rows)
+    curve, c = [], 0.0
+    for x in pnl:
+        c += x
+        curve.append(round(c, 2))
+    step = max(1, len(curve) // 80)
+    curve = curve[::step] + ([curve[-1]] if (len(curve) - 1) % step else [])
+    return {"profit_factor": round(gw / gl, 2) if gl else None, "sharpe": round(mean / sd, 2),
+            "sortino": round(mean / dsd, 2) if dsd else None, "max_drawdown": round(dd, 2),
+            "return_on_risk_pct": round(sum(pnl) / risk * 100, 2) if risk else None, "expectancy": round(mean, 2),
+            "avg_win": round(gw / max(1, sum(1 for x in pnl if x > 0)), 2), "avg_loss": round(-gl / max(1, len(downs)), 2),
+            "equity": curve,
+            "note": "Sharpe/Sortino are per trade (mean P&L ÷ volatility of P&L), not annualized."}
+
+
+CAL_BUCKETS = [(70, 75), (75, 80), (80, 85), (85, 90), (90, 95), (95, 101)]
+CAL_MIN_N = 30
+
+
+def accuracy(rows: List[Dict]) -> Optional[Dict[str, Any]]:
+    """How well predicted POP matched reality: Brier score, calibration error, per-bucket predicted vs realized."""
+    if not rows:
+        return None
+    brier = sum((r["pop"] / 100 - (1 if r["won"] else 0)) ** 2 for r in rows) / len(rows)
+    buckets, ece = [], 0.0
+    for lo, hi in CAL_BUCKETS:
+        sub = [r for r in rows if lo <= r["pop"] < hi]
+        if not sub:
+            continue
+        pred = sum(r["pop"] for r in sub) / len(sub)
+        real = sum(1 for r in sub if r["won"]) / len(sub) * 100
+        ece += abs(pred - real) * len(sub) / len(rows)
+        buckets.append({"range": f"{lo}–{min(hi, 100)}%", "n": len(sub), "predicted": round(pred, 1), "realized": round(real, 1),
+                        "gap": round(real - pred, 1), "calibrated": len(sub) >= CAL_MIN_N})
+    return {"brier": round(brier, 4), "brier_baseline": 0.25, "calibration_error": round(ece, 1), "buckets": buckets,
+            "verdict": "Well calibrated" if ece <= 5 else "Slightly off" if ece <= 12 else "Needs calibration",
+            "note": "Brier: 0 = perfect, 0.25 = coin flip. Calibration error = average |predicted − realized| win rate."}
+
+
+_CALIB: Dict[str, Any] = {}
+
+
+def build_calibration(rows: List[Dict]) -> None:
+    """Per-bucket realized win rate (shrunk toward the prediction) — only for buckets with ≥30 real results."""
+    _CALIB.clear()
+    for lo, hi in CAL_BUCKETS:
+        sub = [r for r in rows if lo <= r["pop"] < hi]
+        if len(sub) >= CAL_MIN_N:
+            pred = sum(r["pop"] for r in sub) / len(sub)
+            wins = sum(1 for r in sub if r["won"])
+            _CALIB[f"{lo}-{hi}"] = {"lo": lo, "hi": hi, "n": len(sub), "rate": (wins + 5 * pred / 100) / (len(sub) + 5) * 100, "pred": pred}
+
+
+def calibrate(pop: float) -> Optional[tuple]:
+    for b in _CALIB.values():
+        if b["lo"] <= pop < b["hi"]:
+            return round(min(99.0, max(1.0, pop + (b["rate"] - b["pred"]))), 1), b["n"]
+    return None
+
+
 def _buckets(rows: List[Dict]) -> List[Dict]:
     out = []
     for lo, hi in ((70, 80), (80, 90), (90, 101)):
@@ -93,7 +171,7 @@ def run_backtest(series: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
                 "entry_date": _candle_date(hist[-1]), "exit_date": _candle_date(candles[i + BACKTEST_DTE_TRADING]),
                 "entry_price": round(S, 2), "exit_price": round(close, 2),
                 "strikes": [l["strike"] for l in best["legs"] if l["type"] != "Stock"],
-                "premium_net": best["premium_net"], "pnl": pnl, "won": pnl > 0,
+                "premium_net": best["premium_net"], "pnl": pnl, "won": pnl > 0, "max_loss": best["max_loss"],
             })
     trades.sort(key=lambda t: t["entry_date"] or "", reverse=True)
     by_strat: Dict[str, List[Dict]] = {}
@@ -101,6 +179,7 @@ def run_backtest(series: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         by_strat.setdefault(t["strategy"], []).append(t)
     return {
         "status": "ready", "stats": _stats(trades), "buckets": _buckets(trades),
+        "risk_adjusted": risk_adjusted(trades), "accuracy": accuracy(trades),
         "by_strategy": [{"strategy": k, **_stats(v)} for k, v in sorted(by_strat.items(), key=lambda kv: -len(kv[1]))],
         "recent": trades[:25],
         "method": ("Backtest: the same engine re-run on past daily closes. Every 5 trading days the best 70%+ POP "
@@ -217,7 +296,7 @@ def register(api_router, *, db, get_user: Callable, user_defaults: Callable, sca
         series = {}
         async with httpx.AsyncClient() as client:
             for s in universe:
-                c = await get_candles(client, s["ticker"], 120)
+                c = await get_candles(client, s["ticker"], 250)
                 if len(c) >= 50:
                     series[s["ticker"]] = {"candles": c, "info": s}
         if not series:
@@ -233,10 +312,11 @@ def register(api_router, *, db, get_user: Callable, user_defaults: Callable, sca
         while True:
             try:
                 await settle_open_picks()
+                build_calibration(await db.picks.find({"status": "settled"}, {"_id": 0, "pop": 1, "won": 1}).to_list(20000))
                 await compute_backtest()
             except Exception as ex:
                 logger.warning(f"track loop: {ex}")
-            await asyncio.sleep(6 * 3600 if _BACKTEST.get("status") == "ready" else 600)
+            await asyncio.sleep(6 * 3600 if _BACKTEST.get("status") == "ready" and _BACKTEST.get("tickers", 0) >= 0.9 * len(universe) else 600)
 
     @api_router.get("/track-record")
     async def track_record(authorization: Optional[str] = Header(default=None)):
@@ -250,6 +330,12 @@ def register(api_router, *, db, get_user: Callable, user_defaults: Callable, sca
         open_count = await db.picks.count_documents({"status": "open"})
         return {
             "live": {"stats": _stats(settled), "buckets": _buckets(settled), "settled": settled[:30],
+                     "risk_adjusted": risk_adjusted(settled), "accuracy": accuracy(settled),
+                     "calibration": {"active": bool(_CALIB), "min_results_per_bucket": CAL_MIN_N,
+                                     "buckets": [{"range": f"{b['lo']}–{min(b['hi'], 100)}%", "n": b["n"], "adjust_pts": round(b["rate"] - b["pred"], 1)}
+                                                 for b in _CALIB.values()],
+                                     "progress": [{"range": f"{lo}–{min(hi, 100)}%", "n": sum(1 for r in settled if lo <= r["pop"] < hi)}
+                                                  for lo, hi in CAL_BUCKETS]},
                      "open": open_rows, "open_count": open_count,
                      "method": "Every pick shown on Discover is logged with its exact strikes and premium, then settled at the real closing price on expiration day. Losses included."},
             "backtest": _BACKTEST,
@@ -373,4 +459,4 @@ def register(api_router, *, db, get_user: Callable, user_defaults: Callable, sca
         )
         return {"score": score, "total": len(L["quiz"]), "passed": passed, "results": results}
 
-    return {"log_picks": log_picks, "track_loop": track_loop, "smart_loop": smart_loop}
+    return {"log_picks": log_picks, "track_loop": track_loop, "smart_loop": smart_loop, "calibrate": calibrate}

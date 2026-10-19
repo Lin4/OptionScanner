@@ -14,6 +14,7 @@ import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate, usePlan, LockedFeature } from "@/src/plans";
 import { AnnouncementBanner } from "@/src/Announcements";
+import { OptiScorePill } from "@/src/quality";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Filters, ProfileId, PROFILE_INFO, defaultFilters, filtersPayload, FilterPanel, ProfilePicker, Label, accountLabel } from "@/src/screen";
 
@@ -169,7 +170,7 @@ function Discover() {
 
         {stats ? (
           <Text testID="scan-stats" style={styles.stats}>
-            {stats.tickers_scanned} stocks · {stats.ideas_evaluated} setups priced · {stats.passed} passed
+            {stats.tickers_scanned}{stats.universe ? `/${stats.universe}` : ""} stocks scanned · {stats.ideas_evaluated} setups priced & ranked by OptiScore · {stats.passed} passed
             {Object.keys(stats.rejected_by || {}).length ? ` · filtered by ${Object.entries(stats.rejected_by).sort((a: any, b: any) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${REJECT_LABEL[k] || k} (${v})`).join(", ")}` : ""}
           </Text>
         ) : null}
@@ -201,24 +202,31 @@ function Discover() {
                   {r.bias ? <Badge text={r.bias} kind={r.bias === "bullish" ? "success" : r.bias === "bearish" ? "error" : "info"} /> : null}
                 </View>
               </View>
-              <View style={{ alignItems: "flex-end" }}>
+              <View style={{ alignItems: "flex-end", gap: 4 }}>
+                <OptiScorePill score={r.optiscore} grade={r.optiscore_grade} />
                 <Text style={styles.price}>${Number(r.price).toFixed(2)}</Text>
                 <Sparkline data={r.sparkline || []} up={(r.annual_pct_no_margin || 0) >= 0} />
-                <Text style={styles.aprMini}>ROC {r.roc_pct != null ? `${r.roc_pct}%` : "∞"}</Text>
               </View>
             </View>
             <View style={styles.metricsRow}>
-              <Mini label="POP" value={`${r.pop}%`} />
+              <Mini label={r.pop_calibrated != null ? "POP (cal.)" : "POP"} value={`${r.pop_calibrated ?? r.pop}%`} />
+              <Mini label="ROC" value={r.roc_pct != null ? `${r.roc_pct}%` : "∞"} tone="success" />
               <Mini label={r.premium_type === "debit" ? "Debit" : "Credit"} value={`$${r.premium}`} />
               <Mini label="Max profit" value={r.max_profit != null ? `$${r.max_profit}` : "∞"} tone="success" />
               <Mini label="Max loss" value={r.max_loss != null ? `$${r.max_loss}` : "undef"} tone="error" />
             </View>
             <View style={styles.tagRow}>
-              <Badge text={`Liquidity ${r.liquidity?.grade || "—"} (est.)`} kind={r.liquidity?.grade === "High" ? "success" : r.liquidity?.grade === "Low" ? "error" : "info"} />
-              <Badge text={`IV rank ${Math.round(r.volatility?.iv_rank ?? 0)}`} kind="info" />
+              <Badge text={`Liquidity ${r.liquidity?.grade || "—"}${r.liquidity?.estimated ? " (est.)" : ""}`} kind={r.liquidity?.grade === "High" ? "success" : r.liquidity?.grade === "Low" ? "error" : "info"} />
+              <Badge text={`IV rank ${Math.round(r.scan?.volatility?.iv_rank ?? r.volatility?.iv_rank ?? 0)}`} kind="info" />
+              {r.validation?.backtest?.hold_to_expiry?.trades ? <Badge text={`History ${r.validation.backtest.hold_to_expiry.win_rate}% won`} kind={r.validation.backtest.hold_to_expiry.win_rate >= r.pop - 10 ? "success" : "warn"} /> : null}
               <Badge text={`${r.expiration_days}d`} kind="info" />
               {r.events?.earnings_in_window ? <Badge text="Earnings in window" kind="warn" /> : null}
             </View>
+            {r.plan ? (
+              <View testID={`disc-plan-${r.ticker}`} style={styles.planStrip}>
+                <Text style={styles.planText}>Plan: {r.plan.sizing.contracts} contract{r.plan.sizing.contracts === 1 ? "" : "s"} · TP ${r.plan.take_profit.option_price} · stop ${r.plan.stop.option_price} · exit by {r.plan.time_exit.date.slice(5)}</Text>
+              </View>
+            ) : null}
             {aiMap[r.ticker]?.why ? <Text style={styles.rationale}>{aiMap[r.ticker].why}</Text> : <Text style={styles.rationale}>{r.why?.[0]}</Text>}
             {aiMap[r.ticker]?.risk ? <Text style={[styles.rationale, { color: colors.error }]}>Risk: {aiMap[r.ticker].risk}</Text> : null}
           </Pressable>
@@ -304,5 +312,7 @@ const styles = StyleSheet.create({
   empty: { alignItems: "center", gap: spacing.sm, padding: spacing.xl, backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md },
   emptyText: { color: colors.onSurfaceSecondary, fontSize: 13, textAlign: "center", lineHeight: 18 },
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: spacing.sm },
+  planStrip: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.sm, paddingHorizontal: spacing.sm, paddingVertical: 6, marginTop: spacing.sm },
+  planText: { fontSize: 11, fontWeight: "700", color: colors.onSurface },
   rationale: { fontSize: 12, color: colors.onSurfaceSecondary, marginTop: spacing.sm, fontStyle: "italic", lineHeight: 17 },
 });

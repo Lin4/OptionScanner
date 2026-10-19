@@ -30,11 +30,44 @@ def _cache_get(key: str, ttl: float):
 def _cache_set(key: str, data: Any):
     _cache[key] = (time.time(), data)
 
+def _stale(key: str):
+    """Last cached value regardless of age (used when a provider is rate-limited or down)."""
+    v = _cache.get(key)
+    return v[1] if v else None
+
+
+# Free-tier request budgets per minute. Over budget -> the call is skipped and callers fall back to cached data.
+_RATE = {"api.polygon.io": 5, "finnhub.io": 55, "alphavantage.co": 5}
+_calls: Dict[str, List[float]] = {}
+CALL_COUNTS: Dict[str, int] = {}
+
+
+def _host(url: str) -> Optional[str]:
+    return next((h for h in _RATE if h in url), None)
+
+
+def _slot(url: str) -> bool:
+    h = _host(url)
+    if not h:
+        return True
+    now = time.time()
+    q = [t for t in _calls.get(h, []) if now - t < 61]
+    _calls[h] = q
+    if len(q) >= _RATE[h]:
+        return False
+    q.append(now)
+    CALL_COUNTS[h] = CALL_COUNTS.get(h, 0) + 1
+    return True
+
 
 async def _get(client: httpx.AsyncClient, url: str, params: dict | None = None) -> Optional[dict]:
+    if not _slot(url):
+        return None
     try:
         r = await client.get(url, params=params, timeout=10.0)
         if r.status_code != 200:
+            if r.status_code == 429 and _host(url):  # provider says slow down -> spend the rest of this minute's budget
+                _calls[_host(url)] = [time.time()] * _RATE[_host(url)]
             logger.warning(f"GET {url} -> {r.status_code} {r.text[:120]}")
             return None
         return r.json()
@@ -60,6 +93,31 @@ UNIVERSE = [
     {"ticker": "SPY", "name": "S&P 500 ETF", "sector": "Index"},
     {"ticker": "COST", "name": "Costco Wholesale", "sector": "Consumer Staples"},
     {"ticker": "BA", "name": "Boeing Co.", "sector": "Industrials"},
+    {"ticker": "QQQ", "name": "Nasdaq-100 ETF", "sector": "Index"},
+    {"ticker": "IWM", "name": "Russell 2000 ETF", "sector": "Index"},
+    {"ticker": "NFLX", "name": "Netflix Inc.", "sector": "Consumer Discretionary"},
+    {"ticker": "AVGO", "name": "Broadcom Inc.", "sector": "Tech"},
+    {"ticker": "CRM", "name": "Salesforce Inc.", "sector": "Tech"},
+    {"ticker": "ORCL", "name": "Oracle Corp.", "sector": "Tech"},
+    {"ticker": "INTC", "name": "Intel Corp.", "sector": "Tech"},
+    {"ticker": "MU", "name": "Micron Technology", "sector": "Tech"},
+    {"ticker": "PLTR", "name": "Palantir Technologies", "sector": "Tech"},
+    {"ticker": "UBER", "name": "Uber Technologies", "sector": "Industrials"},
+    {"ticker": "BAC", "name": "Bank of America", "sector": "Financials"},
+    {"ticker": "WFC", "name": "Wells Fargo", "sector": "Financials"},
+    {"ticker": "GS", "name": "Goldman Sachs", "sector": "Financials"},
+    {"ticker": "V", "name": "Visa Inc.", "sector": "Financials"},
+    {"ticker": "KO", "name": "Coca-Cola Co.", "sector": "Consumer Staples"},
+    {"ticker": "PEP", "name": "PepsiCo Inc.", "sector": "Consumer Staples"},
+    {"ticker": "WMT", "name": "Walmart Inc.", "sector": "Consumer Staples"},
+    {"ticker": "HD", "name": "Home Depot", "sector": "Consumer Discretionary"},
+    {"ticker": "MCD", "name": "McDonald's Corp.", "sector": "Consumer Discretionary"},
+    {"ticker": "NKE", "name": "Nike Inc.", "sector": "Consumer Discretionary"},
+    {"ticker": "CVX", "name": "Chevron Corp.", "sector": "Energy"},
+    {"ticker": "UNH", "name": "UnitedHealth Group", "sector": "Healthcare"},
+    {"ticker": "LLY", "name": "Eli Lilly", "sector": "Healthcare"},
+    {"ticker": "MRK", "name": "Merck & Co.", "sector": "Healthcare"},
+    {"ticker": "CAT", "name": "Caterpillar Inc.", "sector": "Industrials"},
 ]
 UNIVERSE_INDEX = {s["ticker"]: s for s in UNIVERSE}
 
@@ -83,24 +141,51 @@ async def get_quote(client: httpx.AsyncClient, ticker: str) -> Optional[Dict[str
         }
         _cache_set(key, q)
         return q
-    return None
+    return _cache_get(key, 900.0)  # rate-limited / upstream error -> last good quote (<15 min)
 
 
 # =========== CANDLES ===========
-async def get_candles(client: httpx.AsyncClient, ticker: str, days: int = 30) -> List[Dict[str, float]]:
-    """Return list of {o,h,l,c,v} daily candles. Polygon-first (free tier works), fallback Alpha Vantage."""
-    key = f"c:{ticker}:{days}"
-    hit = _cache_get(key, 21600.0)  # daily bars: refresh every 6h
-    if hit is not None: return hit
+CANDLE_STORE = None  # Mongo collection (set by server.py) so daily bars survive restarts
+CANDLE_DAYS = 250
 
+
+async def get_candles(client: httpx.AsyncClient, ticker: str, days: int = 30) -> List[Dict[str, float]]:
+    """Daily {o,h,l,c,v,t} candles. One 250-day series per ticker (sliced for shorter requests), refreshed every 6h
+    and persisted in Mongo. Polygon first, Alpha Vantage fallback, last good series when providers are rate-limited."""
+    n = max(days, CANDLE_DAYS)
+    key = f"c:{ticker}:{n}"
+    hit = _cache_get(key, 21600.0)
+    if hit is not None:
+        return hit[-days:]
+    stale = _stale(key)
+    if stale is None and CANDLE_STORE is not None:
+        doc = await CANDLE_STORE.find_one({"_id": key})
+        if doc and doc.get("candles"):
+            _cache[key] = (doc["ts"], doc["candles"])
+            if time.time() - doc["ts"] < 21600.0:
+                return doc["candles"][-days:]
+            stale = doc["candles"]
+    candles = await _fetch_candles(client, ticker, n)
+    if candles:
+        _cache_set(key, candles)
+        if CANDLE_STORE is not None:
+            try:
+                await CANDLE_STORE.update_one({"_id": key}, {"$set": {"ts": time.time(), "candles": candles}}, upsert=True)
+            except Exception as ex:
+                logger.warning(f"candle store {ticker}: {ex}")
+        return candles[-days:]
+    return (stale or [])[-days:]
+
+
+async def _fetch_candles(client: httpx.AsyncClient, ticker: str, days: int) -> List[Dict[str, float]]:
     # Polygon aggs (free tier gives 2-year history delayed)
     import datetime as dt
     end = dt.date.today()
-    start = end - dt.timedelta(days=max(days * 2, 60))
+    start = end - dt.timedelta(days=max(int(days * 1.5) + 10, 60))
     pdata = await _get(
         client,
         f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start.isoformat()}/{end.isoformat()}",
-        {"adjusted": "true", "sort": "asc", "limit": 300, "apiKey": POLYGON_KEY},
+        {"adjusted": "true", "sort": "asc", "limit": 1000, "apiKey": POLYGON_KEY},
     )
     if pdata and pdata.get("results"):
         candles = [
@@ -108,8 +193,9 @@ async def get_candles(client: httpx.AsyncClient, ticker: str, days: int = 30) ->
             for x in pdata["results"]
         ][-days:]
         if candles:
-            _cache_set(key, candles)
             return candles
+    if pdata is None and len(_calls.get("api.polygon.io", [])) >= _RATE["api.polygon.io"]:
+        return []  # Polygon budget used up this minute -> don't burn the tiny Alpha Vantage quota
 
     # Alpha Vantage daily fallback (rate-limited but okay)
     adata = await _get(
@@ -127,7 +213,6 @@ async def get_candles(client: httpx.AsyncClient, ticker: str, days: int = 30) ->
             "v": float(v["5. volume"]),
         } for _, v in rows]
         if candles:
-            _cache_set(key, candles)
             return candles
 
     return []
@@ -138,7 +223,10 @@ async def get_profile(client: httpx.AsyncClient, ticker: str) -> Dict[str, Any]:
     key = f"p:{ticker}"
     hit = _cache_get(key, 86400.0)
     if hit is not None: return hit
-    data = await _get(client, "https://finnhub.io/api/v1/stock/profile2", {"symbol": ticker, "token": FINNHUB_KEY}) or {}
+    data = await _get(client, "https://finnhub.io/api/v1/stock/profile2", {"symbol": ticker, "token": FINNHUB_KEY})
+    if data is None and _stale(key) is not None:
+        return _stale(key)
+    data = data or {}
     prof = {
         "name": data.get("name") or UNIVERSE_INDEX.get(ticker, {}).get("name") or ticker,
         "sector": data.get("finnhubIndustry") or UNIVERSE_INDEX.get(ticker, {}).get("sector") or "Unknown",
@@ -156,7 +244,9 @@ async def get_metrics(client: httpx.AsyncClient, ticker: str) -> Dict[str, Any]:
     key = f"m:{ticker}"
     hit = _cache_get(key, 3600.0)
     if hit is not None: return hit
-    data = await _get(client, "https://finnhub.io/api/v1/stock/metric", {"symbol": ticker, "metric": "all", "token": FINNHUB_KEY}) or {}
+    data = await _get(client, "https://finnhub.io/api/v1/stock/metric", {"symbol": ticker, "metric": "all", "token": FINNHUB_KEY})
+    if data is None:  # rate-limited / down: last good metrics, and don't cache an empty result
+        return _stale(key) or {}
     m = data.get("metric") or {}
     result = {
         "pe_ttm": m.get("peBasicExclExtraTTM") or m.get("peNormalizedAnnual"),
@@ -226,7 +316,9 @@ async def get_quarterly_financials(client: httpx.AsyncClient, ticker: str, n: in
     if hit is not None:
         return hit
     data = await _get(client, "https://finnhub.io/api/v1/stock/financials-reported",
-                      {"symbol": ticker, "freq": "quarterly", "token": FINNHUB_KEY}) or {}
+                      {"symbol": ticker, "freq": "quarterly", "token": FINNHUB_KEY})
+    if data is None:
+        return _stale(key) or []
     annual = await _get(client, "https://finnhub.io/api/v1/stock/financials-reported",
                         {"symbol": ticker, "freq": "annual", "token": FINNHUB_KEY}) or {}
     rows: Dict[tuple, Dict[str, Any]] = {}
@@ -284,7 +376,9 @@ async def get_earnings(client: httpx.AsyncClient, ticker: str) -> Dict[str, Any]
     end = today + dt.timedelta(days=120)
     data = await _get(client, "https://finnhub.io/api/v1/calendar/earnings", {
         "symbol": ticker, "from": today.isoformat(), "to": end.isoformat(), "token": FINNHUB_KEY,
-    }) or {}
+    })
+    if data is None:
+        return _stale(key) or {"date": None, "eps_estimate": None, "eps_actual": None, "revenue_estimate": None}
     rows = data.get("earningsCalendar") or []
     if not rows:
         past = today - dt.timedelta(days=120)
@@ -307,7 +401,9 @@ async def get_peers(client: httpx.AsyncClient, ticker: str) -> List[str]:
     key = f"pr:{ticker}"
     hit = _cache_get(key, 86400.0)
     if hit is not None: return hit
-    data = await _get(client, "https://finnhub.io/api/v1/stock/peers", {"symbol": ticker, "token": FINNHUB_KEY}) or []
+    data = await _get(client, "https://finnhub.io/api/v1/stock/peers", {"symbol": ticker, "token": FINNHUB_KEY})
+    if data is None:
+        return _stale(key) or []
     peers = [p for p in data if p and p != ticker][:5]
     _cache_set(key, peers)
     return peers
@@ -317,7 +413,10 @@ async def get_recommendations(client: httpx.AsyncClient, ticker: str) -> Dict[st
     key = f"r:{ticker}"
     hit = _cache_get(key, 86400.0)
     if hit is not None: return hit
-    data = await _get(client, "https://finnhub.io/api/v1/stock/recommendation", {"symbol": ticker, "token": FINNHUB_KEY}) or []
+    data = await _get(client, "https://finnhub.io/api/v1/stock/recommendation", {"symbol": ticker, "token": FINNHUB_KEY})
+    if data is None and _stale(key) is not None:
+        return _stale(key)
+    data = data or []
     row = (data or [{}])[0]
     result = {
         "buy": int(row.get("strongBuy", 0) + row.get("buy", 0)),

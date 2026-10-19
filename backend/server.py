@@ -32,7 +32,7 @@ from market import (
     UNIVERSE, UNIVERSE_INDEX, fetch_stock_bundle, get_quote, get_candles,
     sma as calc_sma, rsi as calc_rsi, support_resistance, detect_candle_patterns, detect_chart_patterns,
 )
-from market import get_earnings, get_metrics, get_quarterly_financials, get_peers, _cache_get as market_cache_get
+from market import get_earnings, get_metrics, get_quarterly_financials, get_peers
 import extras
 import billing
 import tradier
@@ -42,12 +42,15 @@ import broadcasts
 from engine import (
     STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
-    trade_plan, price_scenarios, dcf_valuation, default_dcf_inputs, optiiq_value,
+    trade_plan, price_scenarios, dcf_valuation, default_dcf_inputs, optiiq_value, apply_fit, apply_history, management_plan,
 )
+import quant
+import market
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+market.CANDLE_STORE = db.candle_cache  # daily bars survive restarts
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-secret')
@@ -247,7 +250,7 @@ def sparkline_from_candles(candles: List[Dict], points: int = 20) -> List[float]
 async def ticker_snapshot(client: httpx.AsyncClient, ticker: str) -> Optional[Dict[str, Any]]:
     """Cached quote + candles + earnings + metrics -> everything the engine needs."""
     q, c, e, m = await asyncio.gather(
-        get_quote(client, ticker), get_candles(client, ticker, 120),
+        get_quote(client, ticker), get_candles(client, ticker, 250),
         get_earnings(client, ticker), get_metrics(client, ticker), return_exceptions=True,
     )
     if not isinstance(q, dict) or not q.get("price"):
@@ -259,8 +262,43 @@ async def ticker_snapshot(client: httpx.AsyncClient, ticker: str) -> Optional[Di
         "ticker": ticker, "quote": q, "price": q["price"], "candles": c,
         "info": UNIVERSE_INDEX.get(ticker, {"name": ticker, "sector": "Unknown"}),
         "earnings_date": e.get("date"), "dividend_yield": m.get("dividend_yield"),
-        "vol": volatility_profile(c), "sparkline": sparkline_from_candles(c),
+        "vol": volatility_profile(c), "sparkline": sparkline_from_candles(c), "metrics": m,
     }
+
+
+_IVH_CACHE: Dict[str, Any] = {}
+
+
+async def iv_history(tickers: List[str]) -> Dict[str, List[float]]:
+    """Daily ATM-IV snapshots (last 252 days) per ticker, cached 10 min."""
+    key = ",".join(sorted(tickers))
+    hit = _IVH_CACHE.get(key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    since = (now_utc() - timedelta(days=370)).strftime("%Y-%m-%d")
+    out: Dict[str, List[float]] = {t: [] for t in tickers}
+    async for r in db.iv_history.find({"ticker": {"$in": tickers}, "date": {"$gte": since}}, {"_id": 0}).sort("date", 1):
+        out.setdefault(r["ticker"], []).append(r["iv"])
+    _IVH_CACHE[key] = (time.time(), out)
+    return out
+
+
+def apply_iv_rank(snap: Dict[str, Any], hist: List[float]) -> None:
+    r = quant.iv_rank_from_history(hist, (snap.get("chain") or {}).get("atm_iv"))
+    if r:
+        snap["vol"] = {**snap["vol"], "iv_rank": r["iv_rank"], "iv_percentile": r["iv_percentile"],
+                       "iv_rank_source": f"{r['days']} days of recorded implied vol"}
+
+
+def enrich_idea(i: Dict[str, Any], snap: Dict[str, Any], hist: List[float], profile: str, account_size: float) -> None:
+    """Stages 1, 3, 4 for a shortlisted idea: scan report, management plan, validation, calibrated POP."""
+    i["scan"] = quant.scan_report(snap, hist)
+    i["plan"] = management_plan(i, account_size, None, profile)
+    i["validation"] = quant.validate_idea(i, snap.get("candles") or [], i["plan"])
+    apply_history(i)
+    cal = EXTRAS.get("calibrate") and EXTRAS["calibrate"](i["pop"])
+    if cal:
+        i["pop_calibrated"], i["calibration_n"] = cal
 
 
 def ideas_for_snapshot(snap: Dict[str, Any], strategies: List[str], dte: int, account_type: str) -> List[Dict]:
@@ -297,18 +335,33 @@ def data_source_block(idea: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     }
 
 
+async def record_iv(client: httpx.AsyncClient, snap: Optional[Dict[str, Any]]) -> None:
+    """One ATM implied-vol snapshot per ticker per trading day (~30 DTE) -> true IV rank over time."""
+    if not snap:
+        return
+    day = datetime.now(extras.NY).strftime("%Y-%m-%d")
+    if datetime.now(extras.NY).weekday() >= 5 or await db.iv_history.find_one({"ticker": snap["ticker"], "date": day}, {"_id": 1}):
+        return
+    c = await tradier.live_chain(client, snap["ticker"], 30, snap["price"])
+    if c and c.get("atm_iv"):
+        await db.iv_history.update_one({"ticker": snap["ticker"], "date": day},
+                                       {"$set": {"iv": c["atm_iv"], "dte": c["dte"], "price": snap["price"]}}, upsert=True)
+
+
 async def warm_universe_loop():
-    """Pre-compute scans: keep the universe snapshot cache warm so screens return in ~1-2s."""
+    """Pre-compute scans: keep the universe snapshot cache warm so screens return in ~1-2s.
+    Paced so Polygon (5/min) and Finnhub (55/min) budgets stay free for user requests; market._get enforces both."""
     await asyncio.sleep(3)
     while True:
         async with httpx.AsyncClient() as client:
             for s in UNIVERSE:
-                need_candles = market_cache_get(f"c:{s['ticker']}:120", 21600.0) is None
+                before = market.CALL_COUNTS.get("api.polygon.io", 0)
                 try:
-                    await ticker_snapshot(client, s["ticker"])
+                    snap = await ticker_snapshot(client, s["ticker"])
+                    await record_iv(client, snap)
                 except Exception as ex:
                     logger.warning(f"warm {s['ticker']} failed: {ex}")
-                await asyncio.sleep(13 if need_candles else 1)  # respect Polygon free tier (5/min)
+                await asyncio.sleep(13 if market.CALL_COUNTS.get("api.polygon.io", 0) > before else 2)
         await asyncio.sleep(20)
 
 # ========== AI ==========
@@ -519,6 +572,10 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
         snaps = await asyncio.gather(*[ticker_snapshot(client, x["ticker"]) for x in pool])
         snaps = [s for s in snaps if s]
         await attach_chains(client, snaps, dte)
+    hist = await iv_history([s["ticker"] for s in snaps])
+    for s in snaps:
+        apply_iv_rank(s, hist.get(s["ticker"], []))
+    by_tk = {s["ticker"]: s for s in snaps}
 
     def compute():
         best, rejected, evaluated = [], {}, 0
@@ -527,6 +584,7 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
             evaluated += len(ideas)
             ok = []
             for i in ideas:
+                apply_fit(i, profile, account_size, filters)
                 fails = passes(i, filters, profile, account_size, level)
                 for r in fails:
                     rejected[r] = rejected.get(r, 0) + 1
@@ -541,6 +599,12 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
 
     results, rejected, evaluated = await asyncio.to_thread(compute)
     results = results[: req.limit]
+
+    def enrich_all():
+        for r in results:
+            enrich_idea(r, by_tk[r["ticker"]], hist.get(r["ticker"], []), profile, account_size)
+        results.sort(key=lambda r: -r["score"])  # re-rank with the own-history edge included
+    await asyncio.to_thread(enrich_all)
     for r in results:
         r["data_source"] = data_source_block(r)
     out = {
@@ -548,7 +612,8 @@ async def run_scan(req, user: Dict[str, Any], dte: int, pool: List[Dict]) -> Dic
         "filters": filters, "account_type": account_type, "account_size": account_size, "bias": bias,
         "options_level": level, "options_level_label": LEVEL_NAMES.get(level), "allowed_strategies": strategies,
         "min_pop_floor": MIN_POP_FLOOR,
-        "stats": {"tickers_scanned": len(snaps), "ideas_evaluated": evaluated, "passed": len(results), "rejected_by": rejected},
+        "stats": {"tickers_scanned": len(snaps), "universe": len(pool), "ideas_evaluated": evaluated, "passed": len(results),
+                  "rejected_by": rejected},
         "fetched_at": now_utc().isoformat(),
     }
     out["tier"] = tier
@@ -634,15 +699,21 @@ async def ticker_options(req: TickerOptionsReq, authorization: Optional[str] = H
     level = d["options_level"]
     if not req.strategy or req.strategy == "auto":
         strategies = candidate_strategies(profile, "any", level) or candidate_strategies(profile, "any")
+    hist = (await iv_history([tk])).get(tk, [])
+    apply_iv_rank(snap, hist)
     ideas = await asyncio.to_thread(ideas_for_snapshot, snap, strategies, dte, account_type)
     if not ideas:
         raise HTTPException(status_code=500, detail="Engine could not price this ticker")
+    fit_profile = profile if profile != "any" else d.get("profile") or "low_low"
+    for i in ideas:
+        apply_fit(i, fit_profile, account_size, filters)
     graded = [(i, passes(i, filters, profile if profile != "any" else "high_high", account_size, level)) for i in ideas]
     ok = [i for i, f in graded if not f]
     chosen = max(ok or ideas, key=lambda i: i["score"])
     chosen["passes_filters"] = bool(ok) and chosen in ok
     chosen["failed_filters"] = next(f for i, f in graded if i is chosen)
     chosen["alternatives"] = [compact(i, f) for i, f in sorted(graded, key=lambda x: -x[0]["score"]) if i is not chosen]
+    await asyncio.to_thread(enrich_idea, chosen, snap, hist, fit_profile, account_size)
     chosen["data_source"] = data_source_block(chosen)
     chosen["account_size"] = account_size
     chosen["filters"] = filters

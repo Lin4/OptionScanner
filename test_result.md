@@ -101,3 +101,7 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+## Iteration 23 (main agent) - Quant pipeline UI + rate-limit fix
+- Backend: market.py rate limiter + Mongo candle_cache + stale fallbacks; quant.backtest_same returns equity {hold, managed}; extras.risk_adjusted returns equity; track-record live.calibration.progress; track_loop retries backtest until 90% universe coverage.
+- Frontend: quality.tsx rewritten, new quantcharts.tsx, analyze.tsx (PipelineStrip, calibrated POP hero, money formatting), track-record.tsx (CalibrationChart, EquityCurve, CalibrationProgress).
+- needs_retesting: true
