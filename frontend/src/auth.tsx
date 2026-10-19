@@ -25,6 +25,7 @@ type AuthCtx = {
   signInEmail: (email: string, password: string) => Promise<void>;
   signUpEmail: (email: string, password: string, name?: string) => Promise<SignupPending>;
   verifySignup: (email: string, code: string) => Promise<void>;
+  resetPassword: (email: string, code: string, newPassword: string) => Promise<void>;
   resendSignupCode: (email: string) => Promise<SignupPending>;
   exchangeSessionId: (session_id: string) => Promise<void>;
   signOut: () => Promise<void>;
@@ -75,6 +76,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await refresh();
   };
 
+  // Sets the new password, signs out every other device and signs this one in.
+  const resetPassword = async (email: string, code: string, newPassword: string) => {
+    const r = await api("/api/auth/password-reset/confirm", { method: "POST", body: JSON.stringify({ email, code, new_password: newPassword }) });
+    await saveToken(r.session_token);
+    setUser(r.user);
+    await refresh();
+  };
+
   const exchangeSessionId = async (session_id: string) => {
     if (processedSessionIds.has(session_id)) return;
     processedSessionIds.add(session_id);
@@ -91,7 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <Ctx.Provider value={{ user, loading, refresh, signInEmail, signUpEmail, verifySignup, resendSignupCode, exchangeSessionId, signOut }}>
+    <Ctx.Provider value={{ user, loading, refresh, signInEmail, signUpEmail, verifySignup, resetPassword, resendSignupCode, exchangeSessionId, signOut }}>
       {children}
     </Ctx.Provider>
   );

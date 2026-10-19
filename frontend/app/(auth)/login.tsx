@@ -76,6 +76,10 @@ export default function Login() {
             </View>
             <Input testID="login-email" label="Email" value={email} onChangeText={setEmail} placeholder="you@example.com" keyboardType="email-address" />
             <Input testID="login-password" label="Password" value={password} onChangeText={setPassword} placeholder="••••••••" secureTextEntry />
+            <Pressable testID="login-forgot" accessibilityRole="link" hitSlop={8} style={styles.forgot}
+              onPress={() => router.push({ pathname: "/(auth)/forgot-password", params: { email: email.trim().toLowerCase() } })}>
+              <Text style={styles.link}>Forgot password?</Text>
+            </Pressable>
             <Button testID="login-submit" label="Sign in" onPress={onLogin} loading={loading} />
             <View style={styles.dividerRow}>
               <View style={styles.divider} /><Text style={styles.or}>or</Text><View style={styles.divider} />
@@ -132,4 +136,5 @@ const styles = StyleSheet.create({
   footer: { flexDirection: "row", justifyContent: "center", marginTop: spacing.xl },
   footerText: { color: colors.muted },
   link: { color: colors.brandPrimary, fontWeight: "700" },
+  forgot: { alignSelf: "flex-end", marginTop: -spacing.sm, marginBottom: spacing.lg, minHeight: 32, justifyContent: "center" },
 });

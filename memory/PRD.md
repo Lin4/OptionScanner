@@ -140,3 +140,9 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - backend/signup.py: POST /auth/register now only creates a pending sign-up (`email_verifications`, HMAC code digest, 10-min expiry, 60s resend cooldown, 5 wrong tries, 6 sends/hour, TTL purge 24h) and emails a 6-digit code; POST /auth/register/verify creates the user (email_verified=true) and returns session; POST /auth/register/resend. Login for a pending email -> 403.
 - backend/emailer.py: Emergent managed email (Resend proxy), sender name `EMAIL_FROM_NAME=OptiScreen`, safety gate on every send.
 - Frontend: register.tsx -> /(auth)/verify-email (6-box code input, auto-submit, resend countdown, change email); login routes 403 to verify screen. Existing 27 accounts + Google sign-in unchanged.
+
+## Update (Jun 2026) - Forgot password & change email
+- backend/otp.py: shared code machinery (HMAC digests, 10-min expiry, 60s cooldown, 5 tries, 6 sends/h, email templates, notices). signup.py refactored onto it.
+- backend/account.py: password-reset request/confirm (generic response for unknown emails; confirm signs in + revokes all other sessions + notice email); email-change request (current password + code to new address) / resend / confirm (+ notice to old address). Google users blocked (email managed by Google).
+- server.get_user_from_token: a token is valid only with a live user_sessions row (logout/reset revoke immediately).
+- Frontend: (auth)/forgot-password.tsx (email -> code + new password), change-email.tsx (new email + current password -> code), src/CodeInput.tsx (shared 6-box input, countdown, resend), src/authStyles.ts; login "Forgot password?" link; Profile "Change email" row (Google users see a note).

@@ -78,6 +78,18 @@ export default function Profile() {
           </View>
           <MetricRow label="Sign-in method" value={user?.auth_method === "google" ? "Google" : "Email & password"} mono={false} />
           {memberSince ? <MetricRow label="Member since" value={memberSince} mono={false} /> : null}
+          {user?.auth_method === "google" ? (
+            <View testID="profile-email-google" style={styles.googleNote}>
+              <Icon name="info" size={14} color={colors.muted} />
+              <Text style={styles.googleNoteText}>Your email is managed by your Google account.</Text>
+            </View>
+          ) : (
+            <Pressable testID="profile-change-email" onPress={() => router.push("/change-email" as any)} style={styles.changeRow}>
+              <Icon name="at-sign" size={16} color={colors.brandPrimary} />
+              <Text style={styles.changeText}>Change email</Text>
+              <Icon name="chevron-right" size={16} color={colors.muted} />
+            </Pressable>
+          )}
         </View>
 
         <Text style={styles.section}>Plan</Text>
@@ -208,4 +220,8 @@ const styles = StyleSheet.create({
   rowItem: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingVertical: 10 },
   rowLabel: { flex: 1, color: colors.onSurface, fontSize: 14, fontWeight: "600" },
   disclaimer: { marginTop: spacing.xl, fontSize: 11, color: colors.muted, textAlign: "center", lineHeight: 16 },
+  changeRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 48, marginTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: spacing.sm },
+  changeText: { flex: 1, color: colors.brandPrimary, fontSize: 14, fontWeight: "700" },
+  googleNote: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: spacing.md },
+  googleNoteText: { flex: 1, color: colors.muted, fontSize: 12 },
 });

@@ -110,3 +110,8 @@
 - Backend: signup.py (register -> pending + emailed code, verify, resend), emailer.py (Emergent managed email). server.py login returns 403 for pending sign-ups.
 - Frontend: app/(auth)/verify-email.tsx new; register.tsx + login.tsx + src/auth.tsx updated.
 - needs_retesting: true
+
+## Iteration 25 (main agent) - Forgot password + Change email
+- Backend: otp.py (shared), signup.py refactored, account.py (password-reset request/confirm, email-change request/resend/confirm), get_user_from_token requires a live session row.
+- Frontend: (auth)/forgot-password.tsx, change-email.tsx, src/CodeInput.tsx, src/authStyles.ts, login Forgot password link, Profile Change email row.
+- needs_retesting: true

@@ -1,0 +1,32 @@
+{
+  "summary": "Forgot-password + Change-email + Logout revocation tested end-to-end. 18/18 backend pytest cases pass (after waiting through upstream Resend rate limits; code paths are correct). Backend log confirms the post-email-change notice email to the old address is sent (POST integrations.emergentagent.com/api/v1/email/send -> 202) with no 'notice ... not sent' warning on the fresh run. Legacy accounts trader@optiscreen.app / TestPass123! and lingesa4@gmail.com / Linges1@12 still log in 200. Frontend (390x844): login-forgot navigates to /forgot-password, forgot-email is prefilled from login-email; verify-email renders 6 code boxes, verify-submit, verify-resend-timer (post-refactor to shared CodeInput works); profile-change-email -> change-email shows chg-current-email, chg-new-email, chg-password, chg-send and surfaces 'Current password is incorrect.' toast on wrong password.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter25_forgot_password_change_email.py",
+    "/app/test_reports/pytest/iteration25_results.xml"
+  ],
+  "action_items": [
+    "No functional fixes required. All review-request flows pass: /auth/password-reset/request 202 for known+unknown (same shape), re-request within 60s keeps same code_digest, wrong-code countdown 4/3/2/1 then 'Too many wrong tries' (correct code also rejected after lockout), new_password<6 -> 422, expired -> 400, correct code -> {session_token,user} + ALL prior tokens revoked (401 on /auth/me) + login with old password 401 + new password 200 + code reuse rejected. /auth/email-change/request: wrong pw 400, same email 400, used email 409 (trader), valid 202 {email,resend_in}. /auth/email-change/resend: within 60s 429, no pending 404. /auth/email-change/confirm: wrong 400 '4 tries left', correct 200 {email:new}, /auth/me shows new email, login with new works + old 401. /auth/logout then /auth/me -> 401. Legacy logins untouched."
+  ],
+  "critical_code_review_comments": [
+    "otp.py `send_code` correctly rolls back `last_sent_at` on upstream send failure so the user can retry immediately — same pattern reused across signup / reset / email-change (good).",
+    "account.py builds dkey = f'{_id}:{target_email}' which binds every code to BOTH its purpose and the target email, so a leaked reset code can't be replayed for a different flow.",
+    "server.py `get_user_from_token` now requires a live `user_sessions` row (no JWT-only fallback), making password-reset's `delete_many({'user_id': ...})` a real revocation — matches contract in /app/memory/test_credentials.md:35.",
+    "account.email_taken also checks `email_verifications`, preventing a user from stealing an email that is mid-signup (good)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter25_forgot_password_change_email.py (new)"
+  ],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "100% on the flows exercised"},
+  "seed_data_creation": "Created throwaway users via direct Mongo insert (bypassing /auth/register to conserve the shared Resend 6/hour quota). All delivered+rc*@resend.dev users + their user_sessions + auth_codes are deleted in each test class's teardown_class. trader@optiscreen.app and lingesa4@gmail.com were NOT modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Resend quota (observed ~6 sends per hour per domain across the preview env) makes /auth/password-reset/request, /auth/email-change/request, /auth/register and /auth/*/resend return 503 'Too many emails are going out right now' when the quota is drained. Space email-sending tests across runs. Trick: insert a verified user directly into Mongo (bcrypt.hashpw password + email_verified=true) and login via /auth/login to get a real session_token WITHOUT burning an email. For code tests, overwrite auth_codes.code_digest with HMAC-SHA256(key=JWT_SECRET from backend/.env stripped of quotes, msg=f\"{_id}:{target_email}:{code}\") where _id = f\"{purpose}:{user_id}\" and purpose in {password_reset, email_change}; for signup it is email_verifications.code_digest = HMAC(JWT_SECRET, f\"{email}:{code}\"). /auth/me returns {user: {...}} (not the user object directly). pytest.ini pins -n 2 --dist loadscope; pass -n 0 to force serial.",
+  "rca_of_issue": "N/A — no bugs. Observed failures on first pass were upstream Resend 429s cascading to our 503 handler; the OTP machinery correctly rolls back cooldown on failure so a retry 60-180s later succeeded, and the backend code behaviour matched the contract on every rerun."
+}

@@ -47,6 +47,7 @@ from engine import (
 import quant
 import market
 import signup
+import account
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -187,19 +188,14 @@ async def get_user_from_token(authorization: Optional[str]) -> Dict[str, Any]:
         raise HTTPException(status_code=401, detail="Missing auth header")
     token = authorization[7:]
     session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if not session:
-        try:
-            data = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-            user_id = data["user_id"]
-        except Exception:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    else:
-        exp = session.get("expires_at")
-        if exp and exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        if exp and exp < now_utc():
-            raise HTTPException(status_code=401, detail="Session expired")
-        user_id = session["user_id"]
+    if not session:  # signed out, password reset, or expired -> the token is no longer valid
+        raise HTTPException(status_code=401, detail="Session expired — please sign in again")
+    exp = session.get("expires_at")
+    if exp and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp and exp < now_utc():
+        raise HTTPException(status_code=401, detail="Session expired")
+    user_id = session["user_id"]
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -395,6 +391,8 @@ async def start_user_session(user: Dict[str, Any]) -> Dict[str, Any]:
     return {"session_token": token, "user": {k: v for k, v in user.items() if k not in ("password", "_id")}}
 
 signup.register(api_router, db=db, hash_pw=hash_pw, start_session=start_user_session, logger=logger)
+account.register(api_router, db=db, hash_pw=hash_pw, verify_pw=verify_pw, get_user=get_user_from_token,
+                 start_session=start_user_session, logger=logger)
 
 @api_router.post("/auth/login")
 async def login(req: LoginReq):
