@@ -125,6 +125,20 @@ export default function Profile() {
         </>
         )}
 
+        {user?.is_admin ? (
+          <>
+            <Text style={styles.section}>Admin</Text>
+            <Pressable testID="admin-open" onPress={() => router.push("/admin" as any)} style={styles.pushRow}>
+              <Icon name="shield" size={18} color={colors.brandPrimary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pushTitle}>Manage user plans</Text>
+                <Text style={styles.pushSub}>Grant or change any user&apos;s plan in one tap</Text>
+              </View>
+              <Icon name="chevron-right" size={16} color={colors.muted} />
+            </Pressable>
+          </>
+        ) : null}
+
         <Text style={styles.section}>Notifications</Text>
         <Pressable testID="push-test-btn" onPress={testPush} disabled={pushBusy} style={styles.pushRow}>
           <Icon name="bell" size={18} color={colors.brandPrimary} />

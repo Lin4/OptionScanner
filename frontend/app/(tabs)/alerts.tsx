@@ -97,19 +97,19 @@ function Alerts() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
-        {hasSmart ? (
+        {hasSmart || feed.length ? (
           <View testID="smart-feed" style={{ marginBottom: spacing.lg }}>
             <View style={styles.feedHead}>
-              <Text style={styles.feedTitle}>Setup alerts</Text>
-              <Pressable testID="smart-check-now" onPress={checkNow} disabled={checking} style={styles.checkBtn}>
+              <Text style={styles.feedTitle}>Recent alerts</Text>
+              {hasSmart ? <Pressable testID="smart-check-now" onPress={checkNow} disabled={checking} style={styles.checkBtn}>
                 <Icon name="refresh-cw" size={13} color={colors.brandPrimary} />
                 <Text style={styles.checkText}>{checking ? "Checking…" : "Check now"}</Text>
-              </Pressable>
+              </Pressable> : null}
             </View>
-            <Text style={styles.emptySub}>Checked every 30 min during market hours · max 3 alerts/day · only strategies your level unlocks</Text>
+            <Text style={styles.emptySub}>Setups checked every 30 min (max 3/day) · saved strategies every 5 min in market hours</Text>
             {feed.map((e) => (
-              <Pressable key={e.event_id} testID={`feed-${e.event_id}`} onPress={() => router.push({ pathname: "/(tabs)/analyze", params: { ticker: e.ticker, strategy: e.strategy, range: e.expiration_days > 45 ? "3months" : e.expiration_days > 10 ? "month" : "week" } } as any)} style={styles.feedRow}>
-                <View style={styles.iconWrap}><Icon name="zap" size={16} color={colors.brandPrimary} /></View>
+              <Pressable key={e.event_id} testID={`feed-${e.event_id}`} onPress={() => e.kind?.startsWith("strategy_") ? router.push("/(tabs)/portfolio" as any) : router.push({ pathname: "/(tabs)/analyze", params: { ticker: e.ticker, strategy: e.strategy, range: e.expiration_days > 45 ? "3months" : e.expiration_days > 10 ? "month" : "week" } } as any)} style={styles.feedRow}>
+                <View style={styles.iconWrap}><Icon name={e.kind === "strategy_target" ? "target" : e.kind === "strategy_stop" ? "shield" : "zap"} size={16} color={e.kind === "strategy_stop" ? colors.error : e.kind === "strategy_target" ? colors.success : colors.brandPrimary} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowTicker}>{e.title}</Text>
                   <Text style={styles.rowDesc}>{e.message} · {new Date(e.created_at).toLocaleString()}</Text>

@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView, RefreshControl, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, Pressable, ScrollView, RefreshControl } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import Icon from "@react-native-vector-icons/feather";
@@ -12,6 +12,7 @@ import { Sparkline } from "@/src/parts";
 import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate } from "@/src/plans";
+import { StrategiesList } from "@/src/StrategiesList";
 
 export default function PortfolioGated() {
   return <PlanGate><Portfolio /></PlanGate>;
@@ -24,11 +25,13 @@ function Portfolio() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [newTicker, setNewTicker] = useState("");
+  const [strats, setStrats] = useState<{ items: any[]; total_pnl: number }>({ items: [], total_pnl: 0 });
 
   const load = useCallback(async () => {
     try {
-      const r = await api("/api/watchlist");
+      const [r, st] = await Promise.all([api("/api/watchlist"), api("/api/strategies").catch(() => null)]);
       setItems(r.items || []);
+      if (st) setStrats({ items: st.items || [], total_pnl: st.total_pnl || 0 });
     } catch (e: any) { toast(e.message || "Failed", "error"); }
     finally { setLoading(false); setRefreshing(false); }
   }, []);
@@ -57,7 +60,7 @@ function Portfolio() {
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
         <Text style={styles.title}>Portfolio</Text>
-        <Text style={styles.sub}>Your watchlist with live quotes</Text>
+        <Text style={styles.sub}>Saved strategies with live P&L, plus your watchlist</Text>
       </View>
 
       <ScrollView
@@ -65,6 +68,13 @@ function Portfolio() {
         keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brandPrimary} />}
       >
+        <StrategiesList items={strats.items} total={strats.total_pnl} onChanged={load} />
+        {!strats.items.length && !loading ? (
+          <Pressable testID="strategies-empty" onPress={() => router.push("/(tabs)/chain" as any)} style={styles.stratEmpty}>
+            <Icon name="layers" size={18} color={colors.brandPrimary} />
+            <Text style={styles.stratEmptyText}>Build a strategy in the Chain tab and save it to track live P&L here.</Text>
+          </Pressable>
+        ) : null}
         <View style={styles.addCard}>
           <View style={{ flexDirection: "row", gap: spacing.sm, alignItems: "flex-end" }}>
             <View style={{ flex: 1 }}>
@@ -153,5 +163,7 @@ const styles = StyleSheet.create({
   removeBtn: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
 
   empty: { alignItems: "center", padding: spacing.xl, gap: spacing.md },
+  stratEmpty: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, borderRadius: radius.lg, borderWidth: 1, borderStyle: "dashed", borderColor: colors.borderStrong, marginBottom: spacing.lg },
+  stratEmptyText: { flex: 1, fontSize: 13, color: colors.onSurfaceSecondary },
   emptyText: { color: colors.muted, textAlign: "center", fontSize: 13, lineHeight: 18 },
 });

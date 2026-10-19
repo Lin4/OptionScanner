@@ -12,6 +12,7 @@ export type User = {
   questionnaire?: Record<string, any>;
   auth_method?: "email" | "google";
   created_at?: string;
+  is_admin?: boolean;
   access?: { tier: string; source?: string | null; trial_days_left?: number; trial_ends_at?: string; renews_at?: string | null };
 };
 

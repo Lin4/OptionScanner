@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 19 verified all 4 new OptiScreen features end-to-end. Backend: 16/16 pytest cases pass covering Multi-Expiry Builder (Calendar Call / Diagonal Put templates produce 2 legs with distinct expirations ~30d apart, analyze returns multi_expiry=true, heatmap last column days_left=0, finite max_loss; single-expiry regression holds), Saved Strategies CRUD + mark fields (pnl/pnl_pct/target_usd/stop_usd/live), 422/400 validations, cross-user isolation (admin cannot PATCH/DELETE trader's strategy -> 404), tiny-stop alert fires exactly once (no duplicate on second GET), PATCH resets fired, DELETE removes, Admin plan switch (admin lingesa4 lists users with tier, ?q=trader filters, non-admin returns 403, invalid plan 422, expert set + restored to advance). Frontend (Expo web): logged in as lingesa4, Chain tab shows Strategy segment, Calendar Call Spread template produces 2 legs 'exp 2026-10-26' + 'exp 2026-11-27' with multi-expiry-note visible ('Mixed expirations: payoff shown at the nearest expiry...'), save-strategy modal has save-name/target-mode-usd/target-mode-pct/target-value/stop-value/save-confirm, after save routed to /portfolio with strategies-section showing TEST_UI_calendar card + live P&L -$404 + stop/target bars, strategy-toggle expands, strategy-save (update alerts) + strategy-delete work; Alerts tab shows 'Recent alerts' feed-<event_id> with shield icon rendering '🛑 Stop loss hit: TEST_UI_calendar · AAPL P&L -$404 (stop -$1)'; Profile shows admin-open for admin user, Admin screen admin-search filters users, admin-plan-trader@optiscreen.app-{expert,advance} chips switch plans and display 'ADVANCE via admin'. Trader restored to plan 'advance' and all TEST_ strategies + strategy_* alert_events cleaned up. No deprecated expo packages detected.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter19_strategies_admin.py",
+    "/app/test_reports/pytest/iteration19_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "strategies.py mark(): per-leg Tradier chain_for calls run serially inside list_strategies (asyncio.gather is across strategies, not within legs). For users with many multi-expiry strategies this adds latency. Consider deduping chains per (ticker,expiration) across all user strategies in a single batch.",
+    "strategies.py check_hits(): uses mongo $set per hit AND inserts alert_event; two awaits per hit are not atomic. If server dies between insert and $set, duplicate events could occur next tick. Low priority — in practice GET /strategies is idempotent and 'fired' flag covers 99% of cases.",
+    "chain.py analyze_position(): _mixed_stats breakeven detection uses a 401-point grid 0.3S..2.5S. For deep OTM / wide calendars, breakeven root-finding by linear interpolation on a coarse grid can produce slight mislocation (~$0.5). Acceptable but noted.",
+    "chain.py _value_at(): max(left, 0.5) is only applied in bs_greeks call for `greeks` loop (line 136), but _value_at() uses left/365 directly which can be <=0 before falling into intrinsic branch. The branch guard (left <= 0) handles this but the subsequent bs_greeks still receives left/365 where left could be 0+; wrap with max(left,0.5)/365 for safety.",
+    "frontend portfolio.tsx strategies fetch has no visible loading/error state while /api/strategies is slow (observed one playwright run where strategies-section was briefly not rendered after tab switch). Consider showing a skeleton while loading."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter19_strategies_admin.py (new)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "100%"},
+  "seed_data_creation": "Created TEST_* strategies for trader and TEST_UI_calendar for lingesa4 — all cleaned up afterwards. 5 stale strategy_* alert_events cleared from alert_events collection. trader@optiscreen.app plan restored to 'advance' (verified via /api/auth/me).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run iteration19 tests serially (`-n 0`) — Finnhub free tier (60/min) still limits parallel chain fetches. /api/auth/me returns the user wrapped under 'user' key (me.json()['user']['plan']), not top-level. Admin seed user: lingesa4@gmail.com / Linges1@12. Market may be closed during off-hours — strategy mark produces -$400+ P&L for ATM calendar spreads due to wide Tradier spreads; this is expected and makes a `stop:{mode:usd,value:1}` reliably fire a strategy_stop alert. Alerts feed path: GET /api/alerts/feed returns {items:[...]}. Frontend 'Strategy' view testID is `view-builder` (not view-strategy) and the chain tab is the 3rd tab (Discover/Analyze/Chain/Portfolio/Alerts/Learn).",
+  "rca_of_issue": "No functional regressions. Single initial test failure (test_admin_plan_switch_and_restore) was a test-script issue — /api/auth/me wraps the user object under 'user' key; fixed by reading me.json()['user']['plan']. Backend code correctly updates the plan and the GET /auth/me response reflects it immediately."
+}

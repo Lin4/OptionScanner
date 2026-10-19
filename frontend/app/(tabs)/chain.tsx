@@ -8,14 +8,17 @@ import { ToastHost, toast } from "@/src/Toast";
 import { Badge, MetricRow } from "@/src/parts";
 import { PlanGate } from "@/src/plans";
 import { PnLChart, PnLHeatmap, money } from "@/src/pnl";
+import { Button } from "@/src/Button";
+import { SaveStrategySheet } from "@/src/SaveStrategy";
 import { colors, spacing, radius } from "@/src/theme";
 
 type Side = { bid: number; ask: number; mid: number | null; iv: number | null; delta: number | null; oi: number; volume: number } | null;
 type Row = { strike: number; call: Side; put: Side };
-type Leg = { action: "Buy" | "Sell"; type: "Call" | "Put" | "Stock"; strike: number; qty: number; price: number; iv: number | null };
+type Leg = { action: "Buy" | "Sell"; type: "Call" | "Put" | "Stock"; strike: number; qty: number; price: number; iv: number | null; expiration: string };
 
 const TEMPLATES = ["Bull Call Spread", "Bear Put Spread", "Bull Put Spread", "Bear Call Spread", "Iron Condor",
-  "Long Call Butterfly", "Long Straddle", "Long Strangle", "Covered Call", "Cash Secured Put", "Long Call", "Long Put"];
+  "Long Call Butterfly", "Long Straddle", "Long Strangle", "Covered Call", "Cash Secured Put", "Long Call", "Long Put",
+  "Calendar Call Spread", "Calendar Put Spread", "Diagonal Call Spread", "Diagonal Put Spread"];
 
 export default function ChainGated() {
   return <PlanGate><ChainScreen /></PlanGate>;
@@ -64,7 +67,6 @@ function ChainScreen() {
 
   const pickExp = (d: string) => {
     if (d === exp) return;
-    if (legs.length) { setLegs([]); setAnalysis(null); toast("Strategy cleared for the new expiration", "info"); }
     setExp(d);
     loadChain(ticker, d);
   };
@@ -72,14 +74,14 @@ function ChainScreen() {
   const addLeg = (action: "Buy" | "Sell", type: "Call" | "Put", row: Row) => {
     const side = type === "Call" ? row.call : row.put;
     const price = action === "Buy" ? side?.ask : side?.bid;
-    if (!side || !price) { toast("No live quote on that side", "error"); return; }
+    if (!side || !price || !exp) { toast("No live quote on that side", "error"); return; }
     setLegs((prev) => {
-      const i = prev.findIndex((l) => l.action === action && l.type === type && l.strike === row.strike);
+      const i = prev.findIndex((l) => l.action === action && l.type === type && l.strike === row.strike && l.expiration === exp);
       if (i >= 0) return prev.map((l, j) => (j === i ? { ...l, qty: l.qty + 1 } : l));
       if (prev.length >= 8) { toast("Max 8 legs", "error"); return prev; }
-      return [...prev, { action, type, strike: row.strike, qty: 1, price, iv: side.iv }];
+      return [...prev, { action, type, strike: row.strike, qty: 1, price, iv: side.iv, expiration: exp }];
     });
-    toast(`${action} ${type} ${row.strike} @ $${price} added`, "success");
+    toast(`${action} ${type} ${row.strike} ${exp.slice(5)} @ $${price} added`, "success");
   };
 
   const applyTemplate = async (t: string) => {
@@ -158,7 +160,7 @@ function ChainScreen() {
           <ChainTable rows={rows} price={chain?.price} loading={loading} onTap={addLeg}
             showAll={showAll} toggleAll={() => setShowAll((v) => !v)} />
         ) : (
-          <Builder legs={legs} setLegs={setLegs} analysis={analysis} analyzing={analyzing}
+          <Builder ticker={ticker} exp={exp} legs={legs} setLegs={setLegs} analysis={analysis} analyzing={analyzing}
             applyTemplate={applyTemplate} tplLoading={tplLoading} goChain={() => setView("chain")} />
         )}
       </ScrollView>
@@ -217,13 +219,15 @@ function ChainTable({ rows, price, loading, onTap, showAll, toggleAll }: {
   );
 }
 
-function Builder({ legs, setLegs, analysis, analyzing, applyTemplate, tplLoading, goChain }: {
-  legs: Leg[]; setLegs: React.Dispatch<React.SetStateAction<Leg[]>>; analysis: any; analyzing: boolean;
+function Builder({ ticker, exp, legs, setLegs, analysis, analyzing, applyTemplate, tplLoading, goChain }: {
+  ticker: string; exp: string | null; legs: Leg[]; setLegs: React.Dispatch<React.SetStateAction<Leg[]>>; analysis: any; analyzing: boolean;
   applyTemplate: (t: string) => void; tplLoading: string | null; goChain: () => void;
 }) {
   const setQty = (i: number, d: number) => setLegs((p) => p.map((l, j) => (j === i ? { ...l, qty: Math.max(1, Math.min(100, l.qty + d)) } : l)));
   const remove = (i: number) => setLegs((p) => p.filter((_, j) => j !== i));
   const a = analysis;
+  const [saveOpen, setSaveOpen] = useState(false);
+  const multi = new Set(legs.filter((l) => l.type !== "Stock").map((l) => l.expiration)).size > 1;
   return (
     <View>
       <Text style={st.section}>Quick templates</Text>
@@ -245,9 +249,12 @@ function Builder({ legs, setLegs, analysis, analyzing, applyTemplate, tplLoading
           <Text style={st.emptyText}>Pick a template above or tap bid/ask prices in the chain</Text>
         </Pressable>
       ) : legs.map((l, i) => (
-        <View key={`${l.action}-${l.type}-${l.strike}`} testID={`leg-${i}`} style={st.leg}>
+        <View key={`${l.action}-${l.type}-${l.strike}-${l.expiration}`} testID={`leg-${i}`} style={st.leg}>
           <Badge text={l.action} kind={l.action === "Buy" ? "success" : "error"} />
-          <Text style={st.legText}>{l.type === "Stock" ? "100 shares" : `${l.type} ${l.strike}`} <Text style={st.legPx}>@ ${l.price}</Text></Text>
+          <View style={{ flex: 1 }}>
+            <Text style={st.legText}>{l.type === "Stock" ? "100 shares" : `${l.type} ${l.strike}`} <Text style={st.legPx}>@ ${l.price}</Text></Text>
+            {l.type !== "Stock" ? <Text style={st.legExp}>exp {l.expiration}</Text> : null}
+          </View>
           <View style={st.qty}>
             <Pressable testID={`qty-minus-${i}`} onPress={() => setQty(i, -1)} style={st.qtyBtn}><Icon name="minus" size={14} color={colors.onSurface} /></Pressable>
             <Text style={st.qtyText}>{l.qty}</Text>
@@ -266,6 +273,7 @@ function Builder({ legs, setLegs, analysis, analyzing, applyTemplate, tplLoading
             <Kpi label="Max loss" value={a.unlimited_loss ? "Unlimited" : money(a.max_loss)} color={colors.error} />
             <Kpi label="POP" value={`${a.pop}%`} color={a.pop >= 50 ? colors.success : colors.warning} />
           </View>
+          {a.multi_expiry ? <Text testID="multi-expiry-note" style={st.multiNote}>Mixed expirations: payoff shown at the nearest expiry ({a.expiration}); later legs valued with their remaining time.</Text> : null}
           <Text style={st.section}>Profit / loss by price</Text>
           <PnLChart curve={a.curve} price={a.price} breakevens={a.breakevens} />
           <Text style={st.section}>Profit / loss by date & price move</Text>
@@ -280,9 +288,14 @@ function Builder({ legs, setLegs, analysis, analyzing, applyTemplate, tplLoading
             <Kpi label="Theta/day" value={money(a.greeks.theta)} color={a.greeks.theta >= 0 ? colors.success : colors.error} />
             <Kpi label="Vega" value={String(a.greeks.vega)} />
           </View>
+          <View style={{ marginTop: spacing.lg }}>
+            <Button testID="save-strategy" label="Save strategy & track P&L" icon={<Icon name="bookmark" size={16} color={colors.onBrandPrimary} />} onPress={() => setSaveOpen(true)} />
+          </View>
           <Text style={st.disc}>Entry at live bid/ask. Future values modeled with each leg&apos;s implied vol. Research only — not investment advice.</Text>
         </View>
       ) : null}
+      <SaveStrategySheet visible={saveOpen} onClose={() => setSaveOpen(false)} ticker={ticker} expiration={exp}
+        legs={legs} defaultName={`${ticker} ${multi ? "multi-expiry" : ""} strategy`.replace("  ", " ")} />
     </View>
   );
 }
@@ -344,7 +357,9 @@ const st = StyleSheet.create({
   emptyBox: { flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.lg, borderRadius: radius.md, borderWidth: 1, borderStyle: "dashed", borderColor: colors.borderStrong },
   emptyText: { flex: 1, color: colors.onSurfaceSecondary, fontSize: 13 },
   leg: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
-  legText: { flex: 1, fontSize: 14, fontWeight: "700", color: colors.onSurface },
+  legText: { fontSize: 14, fontWeight: "700", color: colors.onSurface },
+  legExp: { fontSize: 11, color: colors.muted, marginTop: 1 },
+  multiNote: { fontSize: 12, color: colors.onBrandSecondary, backgroundColor: colors.brandSecondary, padding: spacing.sm, borderRadius: radius.sm, marginTop: spacing.md, lineHeight: 16 },
   legPx: { fontWeight: "500", color: colors.onSurfaceSecondary },
   qty: { flexDirection: "row", alignItems: "center", gap: 6 },
   qtyBtn: { width: 32, height: 32, borderRadius: radius.sm, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },

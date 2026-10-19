@@ -37,6 +37,7 @@ import extras
 import billing
 import tradier
 import chain
+import strategies
 from engine import (
     STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
@@ -1140,6 +1141,7 @@ async def startup():
     asyncio.create_task(warm_universe_loop())
     asyncio.create_task(EXTRAS["track_loop"]())
     asyncio.create_task(EXTRAS["smart_loop"]())
+    asyncio.create_task(STRATS["loop"]())
     logger.info("OptiScreen API ready")
 
 @app.on_event("shutdown")
@@ -1165,6 +1167,8 @@ EXTRAS: Dict[str, Any] = extras.register(
 )
 
 chain.register(api_router, get_user=get_user_from_token, get_quote=get_quote)
+STRATS = strategies.register(api_router, db=db, get_user=get_user_from_token, get_quote=get_quote, send_push=send_push,
+                             logger=logger, market_open_now=extras.market_open_now)
 
 
 app.include_router(api_router)

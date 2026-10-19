@@ -259,7 +259,7 @@ def register(api_router, *, db, get_user: Callable, user_defaults: Callable, sca
     async def smart_check_user(user: Dict, alert: Dict, force: bool = False) -> List[Dict]:
         uid = user["user_id"]
         start = datetime.now(NY).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
-        sent_today = await db.alert_events.count_documents({"user_id": uid, "created_at": {"$gte": start}})
+        sent_today = await db.alert_events.count_documents({"user_id": uid, "kind": "smart_setup", "created_at": {"$gte": start}})
         if sent_today >= MAX_SMART_ALERTS_PER_DAY:
             return []
         profile = alert.get("note") or "low_low"
