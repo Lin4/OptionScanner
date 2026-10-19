@@ -29,11 +29,16 @@ class SaveStrategyReq(BaseModel):
     legs: List[LegIn] = Field(min_length=1, max_length=8)
     target: Optional[Threshold] = None
     stop: Optional[Threshold] = None
+    strategy_type: Optional[str] = Field(default=None, max_length=40)  # template name when built from one
 
 
 class UpdateStrategyReq(BaseModel):
     target: Optional[Threshold] = None
     stop: Optional[Threshold] = None
+
+
+class ArchiveReq(BaseModel):
+    archived: bool = True
 
 
 class RollReq(BaseModel):
@@ -50,6 +55,64 @@ def threshold_usd(t: Optional[Dict], base: Optional[float]) -> Optional[float]:
     if not t:
         return None
     return round(t["value"], 2) if t["mode"] == "usd" else round(abs(base or 0) * t["value"] / 100, 2) or None
+
+
+def classify(legs: List[Dict]) -> str:
+    """Name a position from its leg structure (used for History insights)."""
+    opts = [l for l in legs if l["type"] != "Stock"]
+    stock = len(opts) != len(legs)
+    exps = {l["expiration"] for l in opts}
+    if stock:
+        return "Covered Call" if len(opts) == 1 and opts[0]["type"] == "Call" and opts[0]["action"] == "Sell" else "Stock + Options"
+    if len(opts) == 1:
+        o = opts[0]
+        if o["action"] == "Sell" and o["type"] == "Put":
+            return "Cash Secured Put"
+        return f"{'Long' if o['action'] == 'Buy' else 'Short'} {o['type']}"
+    if len(opts) == 2:
+        a, b = opts
+        if a["type"] == b["type"] and a["action"] != b["action"]:
+            if len(exps) == 2:
+                return f"{'Calendar' if a['strike'] == b['strike'] else 'Diagonal'} {a['type']} Spread"
+            buy = a if a["action"] == "Buy" else b
+            sell = b if buy is a else a
+            if a["type"] == "Call":
+                return "Bull Call Spread" if buy["strike"] < sell["strike"] else "Bear Call Spread"
+            return "Bear Put Spread" if buy["strike"] > sell["strike"] else "Bull Put Spread"
+        if a["type"] != b["type"] and a["action"] == b["action"]:
+            kind = "Straddle" if a["strike"] == b["strike"] else "Strangle"
+            return f"{'Long' if a['action'] == 'Buy' else 'Short'} {kind}"
+    types = [l["type"] for l in opts]
+    if len(opts) == 4 and types.count("Call") == 2 and len(exps) == 1:
+        shorts = {l["strike"] for l in opts if l["action"] == "Sell"}
+        return "Iron Butterfly" if len(shorts) == 1 else "Iron Condor"
+    if len(set(types)) == 1 and sum(l["qty"] for l in opts) == 4 and len(opts) == 3:
+        return f"Long {types[0]} Butterfly"
+    return "Custom"
+
+
+def trade_stats(rows: List[Dict]) -> Dict[str, Any]:
+    pnl = [r.get("final_pnl") or 0 for r in rows]
+    wins = [p for p in pnl if p > 0]
+    losses = [p for p in pnl if p <= 0]
+    best = max(rows, key=lambda r: r.get("final_pnl") or 0)
+    worst = min(rows, key=lambda r: r.get("final_pnl") or 0)
+    pick = lambda r: {"strategy_id": r["strategy_id"], "name": r["name"], "ticker": r["ticker"], "pnl": r.get("final_pnl")}
+    return {"count": len(rows), "wins": len(wins), "win_rate": round(len(wins) / len(rows) * 100, 1),
+            "avg_pnl": round(sum(pnl) / len(pnl), 2), "avg_win": round(sum(wins) / len(wins), 2) if wins else None,
+            "avg_loss": round(sum(losses) / len(losses), 2) if losses else None, "total": round(sum(pnl), 2),
+            "best": pick(best), "worst": pick(worst)}
+
+
+def history_insights(closed: List[Dict]) -> Optional[Dict[str, Any]]:
+    if not closed:
+        return None
+    groups: Dict[str, List[Dict]] = {}
+    for r in closed:
+        groups.setdefault(r["strategy_type"], []).append(r)
+    by_type = [{"type": t, **trade_stats(rs)} for t, rs in groups.items()]
+    by_type.sort(key=lambda x: (-x["count"], -x["total"]))
+    return {"overall": trade_stats(closed), "by_type": by_type}
 
 
 def _iso(d: Dict) -> Dict:
@@ -198,6 +261,7 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
             "pop": a["pop"], "breakevens": a["breakevens"], "multi_expiry": a["multi_expiry"],
             "expiration": min(l["expiration"] for l in legs if l["type"] != "Stock"),
             "target": req.target.model_dump() if req.target else None, "stop": req.stop.model_dump() if req.stop else None,
+            "strategy_type": req.strategy_type or classify([l.model_dump() for l in req.legs]),
             "fired": {}, "status": "open", "realized_pnl": 0.0, "rolls": [], "history": {},
             "created_at": datetime.now(timezone.utc),
         }
@@ -220,9 +284,22 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
             new_events += await check_hits(s, s["mark"])
         for s in rows:
             s["history"] = [{"date": d, "pnl": v} for d, v in sorted((s.get("history") or {}).items())]
+            s["strategy_type"] = s.get("strategy_type") or classify(s["legs"])
             _iso(s)
-        return {"items": open_rows, "closed": closed[:50], "total_pnl": round(sum(s["mark"].get("pnl", 0) for s in open_rows), 2),
-                "realized_total": round(sum(s.get("final_pnl") or 0 for s in closed), 2), "new_alerts": len(new_events)}
+        active = [r for r in closed if not r.get("archived")]
+        return {"items": open_rows, "closed": active[:100], "archived": [r for r in closed if r.get("archived")][:100],
+                "total_pnl": round(sum(s["mark"].get("pnl", 0) for s in open_rows), 2),
+                "realized_total": round(sum(s.get("final_pnl") or 0 for s in closed), 2),
+                "insights": history_insights(closed), "new_alerts": len(new_events)}
+
+    @api_router.post("/strategies/{sid}/archive")
+    async def archive_strategy(sid: str, req: ArchiveReq, authorization: Optional[str] = Header(default=None)):
+        user = await get_user(authorization)
+        s = await own(sid, user)
+        if s.get("status") != "closed":
+            raise HTTPException(status_code=400, detail="Only closed trades can be archived")
+        await db.strategies.update_one({"strategy_id": sid}, {"$set": {"archived": req.archived}})
+        return {"ok": True, "archived": req.archived}
 
     @api_router.post("/strategies/{sid}/close")
     async def close_strategy(sid: str, authorization: Optional[str] = Header(default=None)):
@@ -382,6 +459,45 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
                 "active": active, "signups_daily": [{"date": d, "count": daily.get(d, 0)} for d in days],
                 "open_strategies": await db.strategies.count_documents({"status": "open"})}
 
+    @api_router.get("/admin/users/{uid}")
+    async def admin_user_detail(uid: str, authorization: Optional[str] = Header(default=None)):
+        await require_admin(authorization)
+        import billing
+        u = await db.users.find_one({"user_id": uid}, {"_id": 0, "password": 0})
+        if not u:
+            raise HTTPException(status_code=404, detail="User not found")
+        acc = billing.compute_access(u)
+        now = datetime.now(timezone.utc)
+        days = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(13, -1, -1)]
+        usage = {r["day"]: r.get("scans", 0) for r in await db.usage.find({"user_id": uid, "day": {"$gte": days[0]}}, {"_id": 0}).to_list(60)}
+        strats = await db.strategies.find({"user_id": uid}, {"_id": 0, "history": 0, "legs": 0, "rolls": 0, "exit_legs": 0}) \
+            .sort("created_at", -1).to_list(200)
+        closed = [s for s in strats if s.get("status") == "closed"]
+        events = await db.alert_events.find({"user_id": uid}, {"_id": 0, "user_id": 0, "key": 0}).sort("created_at", -1).to_list(5)
+        plan_hist = await db.plan_events.find({"user_id": uid}, {"_id": 0, "user_id": 0}).sort("at", -1).to_list(100)
+        plan_hist.append({"plan": "signed up", "source": "registration (7-day trial starts)", "by": None, "at": u.get("created_at")})
+        pays = await db.payment_transactions.find({"user_id": uid, "status": "paid"}, {"_id": 0, "plan": 1, "amount": 1, "paid_at": 1}).to_list(50)
+        pays += [{"plan": p.get("plan"), "amount": p.get("amount"), "paid_at": p.get("created_at"), "source": "paypal"}
+                 for p in await db.payments.find({"user_id": uid}, {"_id": 0}).to_list(50)]
+        for x in strats + events + plan_hist + pays:
+            _iso(x)
+        q = u.get("questionnaire") or {}
+        return {
+            "user": _iso({k: u.get(k) for k in ("user_id", "email", "name", "created_at", "last_active_at", "is_admin",
+                                                "plan", "plan_source", "plan_expires_at", "questionnaire_complete", "consent_signed")}),
+            "access": {"tier": acc["tier"], "trial_ends_at": acc["trial_ends_at"], "renews_at": acc["renews_at"]},
+            "profile": {k: q.get(k) for k in ("experience", "risk_tolerance", "capital", "options_level", "account_type")},
+            "activity": {"scans_14d": sum(usage.values()), "scans_today": usage.get(days[-1], 0),
+                         "usage_daily": [{"date": d, "scans": usage.get(d, 0)} for d in days],
+                         "alerts": await db.alerts.count_documents({"user_id": uid}),
+                         "alert_events": await db.alert_events.count_documents({"user_id": uid}),
+                         "watchlist": await db.watchlist.count_documents({"user_id": uid}), "recent_events": events},
+            "strategies": {"open": [s for s in strats if s.get("status") == "open"][:20], "closed": closed[:20],
+                           "open_count": sum(1 for s in strats if s.get("status") == "open"), "closed_count": len(closed),
+                           "realized_total": round(sum(s.get("final_pnl") or 0 for s in closed), 2)},
+            "plan_history": plan_hist, "payments": sorted(pays, key=lambda p: str(p.get("paid_at") or ""), reverse=True),
+        }
+
     @api_router.post("/admin/users/{uid}/plan")
     async def admin_set_plan(uid: str, req: AdminPlanReq, authorization: Optional[str] = Header(default=None)):
         admin = await require_admin(authorization)
@@ -390,6 +506,8 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
         r = await db.users.update_one({"user_id": uid}, {"$set": upd})
         if not r.matched_count:
             raise HTTPException(status_code=404, detail="User not found")
+        import billing
+        await billing.log_plan_event(db, uid, req.plan, "admin", by=admin["email"])
         logger.info(f"admin {admin['email']} set {uid} plan={req.plan}")
         return {"ok": True, "plan": req.plan}
 

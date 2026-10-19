@@ -125,23 +125,92 @@ function StrategyCard({ it, onChanged }: { it: any; onChanged: () => void }) {
   );
 }
 
-/** Closed strategies with their final realized result. */
-export function ClosedHistory({ items, total }: { items: any[]; total: number }) {
-  if (!items.length) return null;
-  const wins = items.filter((c) => (c.final_pnl ?? 0) > 0).length;
+/** Closed trades: insights (overall + by strategy type), list with archive/delete, archived toggle. */
+export function ClosedHistory({ items, archived, insights, total, onChanged }: {
+  items: any[]; archived: any[]; insights: any; total: number; onChanged: () => void;
+}) {
+  const [showArchived, setShowArchived] = useState(false);
+  if (!items.length && !archived.length) return null;
+  const list = showArchived ? archived : items;
   return (
     <View testID="closed-history" style={{ marginTop: spacing.md }}>
       <View style={s.head}>
-        <Text style={s.label}>History · {items.length} closed · {Math.round((wins / items.length) * 100)}% won</Text>
+        <Text style={s.label}>History · {items.length + archived.length} closed</Text>
         <Text testID="realized-total" style={[s.total, { color: total >= 0 ? colors.success : colors.error }]}>{money(total)}</Text>
       </View>
-      {items.map((c) => (
-        <View key={c.strategy_id} testID={`closed-${c.strategy_id}`} style={s.closedRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={s.closedName} numberOfLines={1}>{c.name}</Text>
-            <Text style={s.sub}>{c.ticker} · closed {c.closed_at ? new Date(c.closed_at).toLocaleDateString() : ""} · ${c.entry_underlying} → ${c.exit_underlying}{c.rolls?.length ? ` · ${c.rolls.length} roll${c.rolls.length > 1 ? "s" : ""}` : ""}</Text>
-          </View>
-          <Text style={[s.closedPnl, { color: (c.final_pnl ?? 0) >= 0 ? colors.success : colors.error }]}>{money(c.final_pnl)}</Text>
+      {insights ? <HistoryInsights ins={insights} /> : null}
+      {archived.length ? (
+        <View style={s.seg}>
+          {[false, true].map((a) => (
+            <Pressable key={String(a)} testID={a ? "history-archived-tab" : "history-active-tab"} onPress={() => setShowArchived(a)} style={[s.segBtn, showArchived === a && s.segOn]}>
+              <Text style={[s.segText, showArchived === a && s.segTextOn]}>{a ? `Archived (${archived.length})` : `Trades (${items.length})`}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+      {list.map((c) => <ClosedRow key={c.strategy_id} c={c} onChanged={onChanged} />)}
+      {!list.length ? <Text style={s.sub}>Nothing here.</Text> : null}
+    </View>
+  );
+}
+
+function ClosedRow({ c, onChanged }: { c: any; onChanged: () => void }) {
+  const [armed, setArmed] = useState(false);
+  const archive = async () => {
+    try {
+      await api(`/api/strategies/${c.strategy_id}/archive`, { method: "POST", body: JSON.stringify({ archived: !c.archived }) });
+      toast(c.archived ? "Moved back to History" : "Archived — still counted in insights", "info"); onChanged();
+    } catch (e: any) { toast(e.message || "Failed", "error"); }
+  };
+  const del = async () => {
+    if (!armed) { setArmed(true); setTimeout(() => setArmed(false), 4000); return; }
+    try { await api(`/api/strategies/${c.strategy_id}`, { method: "DELETE" }); toast("Trade deleted", "info"); onChanged(); }
+    catch (e: any) { toast(e.message || "Failed", "error"); }
+  };
+  return (
+    <View testID={`closed-${c.strategy_id}`} style={s.closedRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={s.closedName} numberOfLines={1}>{c.name}</Text>
+        <Text style={s.sub}>{c.strategy_type} · {c.ticker} · {c.closed_at ? new Date(c.closed_at).toLocaleDateString() : ""}{c.rolls?.length ? ` · ${c.rolls.length} roll${c.rolls.length > 1 ? "s" : ""}` : ""}</Text>
+      </View>
+      <Text style={[s.closedPnl, { color: (c.final_pnl ?? 0) >= 0 ? colors.success : colors.error }]}>{money(c.final_pnl)}</Text>
+      <Pressable testID={`archive-${c.strategy_id}`} onPress={archive} hitSlop={6} style={s.iconBtn}>
+        <Icon name={c.archived ? "corner-up-left" : "archive"} size={15} color={colors.onSurfaceSecondary} />
+      </Pressable>
+      <Pressable testID={`delete-closed-${c.strategy_id}`} onPress={del} hitSlop={6} style={[s.iconBtn, armed && { backgroundColor: colors.error }]}>
+        <Icon name={armed ? "check" : "trash-2"} size={15} color={armed ? colors.onError : colors.error} />
+      </Pressable>
+    </View>
+  );
+}
+
+function HistoryInsights({ ins }: { ins: any }) {
+  const o = ins.overall;
+  const c = (v: number | null) => (v == null ? colors.muted : v >= 0 ? colors.success : colors.error);
+  return (
+    <View testID="history-insights" style={s.insBox}>
+      <View style={s.insKpis}>
+        <View style={s.insKpi}><Text style={s.insLabel}>Win rate</Text><Text testID="ins-winrate" style={[s.insVal, { color: o.win_rate >= 50 ? colors.success : colors.error }]}>{o.win_rate}%</Text></View>
+        <View style={s.insKpi}><Text style={s.insLabel}>Avg P&L</Text><Text testID="ins-avg" style={[s.insVal, { color: c(o.avg_pnl) }]}>{money(o.avg_pnl)}</Text></View>
+        <View style={s.insKpi}><Text style={s.insLabel}>Avg win</Text><Text style={[s.insVal, { color: colors.success }]}>{o.avg_win == null ? "—" : money(o.avg_win)}</Text></View>
+        <View style={s.insKpi}><Text style={s.insLabel}>Avg loss</Text><Text style={[s.insVal, { color: colors.error }]}>{o.avg_loss == null ? "—" : money(o.avg_loss)}</Text></View>
+      </View>
+      <View style={s.bw}>
+        <Text style={s.bwText} numberOfLines={1}><Text style={{ color: colors.success, fontWeight: "800" }}>Best </Text>{o.best.name} {money(o.best.pnl)}</Text>
+        <Text style={s.bwText} numberOfLines={1}><Text style={{ color: colors.error, fontWeight: "800" }}>Worst </Text>{o.worst.name} {money(o.worst.pnl)}</Text>
+      </View>
+      <Text style={[s.label, { marginTop: spacing.md, marginBottom: 4 }]}>By strategy type</Text>
+      <View style={s.typeHead}>
+        <Text style={[s.th, { flex: 1, textAlign: "left" }]}>Type</Text><Text style={s.th}>Trades</Text><Text style={s.th}>Win</Text><Text style={s.th}>Avg</Text><Text style={s.th}>Best</Text><Text style={s.th}>Worst</Text>
+      </View>
+      {ins.by_type.map((t: any) => (
+        <View key={t.type} testID={`ins-type-${t.type.replace(/ /g, "-")}`} style={s.typeRow}>
+          <Text style={[s.td, { flex: 1, textAlign: "left", fontWeight: "700" }]} numberOfLines={1}>{t.type}</Text>
+          <Text style={s.td}>{t.count}</Text>
+          <Text style={[s.td, { color: t.win_rate >= 50 ? colors.success : colors.error }]}>{Math.round(t.win_rate)}%</Text>
+          <Text style={[s.td, { color: c(t.avg_pnl) }]}>{money(t.avg_pnl)}</Text>
+          <Text style={[s.td, { color: c(t.best.pnl) }]}>{money(t.best.pnl)}</Text>
+          <Text style={[s.td, { color: c(t.worst.pnl) }]}>{money(t.worst.pnl)}</Text>
         </View>
       ))}
     </View>
@@ -149,6 +218,23 @@ export function ClosedHistory({ items, total }: { items: any[]; total: number })
 }
 
 const s = StyleSheet.create({
+  seg: { flexDirection: "row", backgroundColor: colors.surfaceTertiary, borderRadius: radius.md, padding: 3, marginVertical: spacing.sm },
+  segBtn: { flex: 1, height: 34, alignItems: "center", justifyContent: "center", borderRadius: radius.sm },
+  segOn: { backgroundColor: colors.surface },
+  segText: { fontSize: 12, fontWeight: "700", color: colors.muted },
+  segTextOn: { color: colors.onSurface },
+  iconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
+  insBox: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.sm },
+  insKpis: { flexDirection: "row", gap: spacing.sm },
+  insKpi: { flex: 1 },
+  insLabel: { fontSize: 10, color: colors.muted, fontWeight: "700" },
+  insVal: { fontSize: 16, fontWeight: "800", fontVariant: ["tabular-nums"], marginTop: 2 },
+  bw: { marginTop: spacing.sm, gap: 2 },
+  bwText: { fontSize: 12, color: colors.onSurface },
+  typeHead: { flexDirection: "row", paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  typeRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  th: { width: 46, fontSize: 9, fontWeight: "800", color: colors.muted, textAlign: "right" },
+  td: { width: 46, fontSize: 11, color: colors.onSurface, textAlign: "right", fontVariant: ["tabular-nums"] },
   actions: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.md },
   actBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, height: 44, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   actText: { fontWeight: "800", color: colors.onSurface, fontSize: 13 },

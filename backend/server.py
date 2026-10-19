@@ -443,6 +443,7 @@ async def set_plan(req: PlanReq, authorization: Optional[str] = Header(default=N
     if req.plan != "free":
         raise HTTPException(status_code=402, detail="Paid plans require checkout (card, Apple Pay, Google Pay, PayPal or App Store)")
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": "free", "plan_source": None, "plan_expires_at": None}})
+    await billing.log_plan_event(db, user["user_id"], "free", "user")
     return {"ok": True, "plan": req.plan}
 
 @api_router.post("/user/questionnaire")
@@ -1106,6 +1107,7 @@ async def paypal_capture(req: CaptureOrderReq, authorization: Optional[str] = He
             {"user_id": user["user_id"]},
             {"$set": {"plan": res["plan"], "plan_source": "paypal", "plan_expires_at": now_utc() + timedelta(days=30)}},
         )
+        await billing.log_plan_event(db, user["user_id"], res["plan"], "paypal")
         await db.payments.insert_one({
             "user_id": user["user_id"],
             "order_id": req.order_id,

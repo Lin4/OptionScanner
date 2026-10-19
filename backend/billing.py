@@ -38,6 +38,12 @@ def _aware(d):
     return d
 
 
+async def log_plan_event(db, user_id: str, plan: Optional[str], source: Optional[str], by: Optional[str] = None) -> None:
+    """Append-only plan history (admin user detail)."""
+    await db.plan_events.insert_one({"user_id": user_id, "plan": plan, "source": source, "by": by,
+                                     "at": datetime.now(timezone.utc)})
+
+
 def compute_access(user: Dict[str, Any]) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     created = _aware(user.get("created_at")) or now
@@ -142,6 +148,7 @@ def register(api_router, *, db, get_user: Callable, logger):
                 await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
                     "plan": tx["plan"], "plan_source": "stripe", "stripe_subscription_id": s.get("subscription"),
                     "plan_expires_at": datetime.now(timezone.utc) + timedelta(days=31)}})
+                await log_plan_event(db, user["user_id"], tx["plan"], "stripe")
         elif s.status == "expired" and tx["status"] == "initiated":
             await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {"status": "expired"}})
         return {"status": s.status, "payment_status": s.payment_status, "paid": paid, "plan": tx["plan"]}
@@ -155,6 +162,7 @@ def register(api_router, *, db, get_user: Callable, logger):
     async def billing_downgrade(authorization: Optional[str] = Header(default=None)):
         user = await get_user(authorization)
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": "free", "plan_source": None, "plan_expires_at": None}})
+        await log_plan_event(db, user["user_id"], "free", "user")
         return {"ok": True}
 
     return {"bump_scan": bump_scan, "scans_today": scans_today}

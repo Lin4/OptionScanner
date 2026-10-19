@@ -38,6 +38,7 @@ function ChainScreen() {
   const [analysis, setAnalysis] = useState<any>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [tplLoading, setTplLoading] = useState<string | null>(null);
+  const [tpl, setTpl] = useState<{ name: string; key: string } | null>(null);
 
   const loadChain = useCallback(async (tk: string, e: string) => {
     setLoading(true);
@@ -90,6 +91,7 @@ function ChainScreen() {
     try {
       const r = await api("/api/chain/template", { method: "POST", body: JSON.stringify({ ticker, expiration: exp, template: t }) });
       setLegs(r.legs);
+      setTpl({ name: t, key: JSON.stringify(r.legs) });
     } catch (err: any) { toast(err.message || "Template failed", "error"); }
     finally { setTplLoading(null); }
   };
@@ -160,7 +162,7 @@ function ChainScreen() {
           <ChainTable rows={rows} price={chain?.price} loading={loading} onTap={addLeg}
             showAll={showAll} toggleAll={() => setShowAll((v) => !v)} />
         ) : (
-          <Builder ticker={ticker} exp={exp} legs={legs} setLegs={setLegs} analysis={analysis} analyzing={analyzing}
+          <Builder ticker={ticker} exp={exp} tplName={tpl && tpl.key === JSON.stringify(legs) ? tpl.name : null} legs={legs} setLegs={setLegs} analysis={analysis} analyzing={analyzing}
             applyTemplate={applyTemplate} tplLoading={tplLoading} goChain={() => setView("chain")} />
         )}
       </ScrollView>
@@ -219,8 +221,8 @@ function ChainTable({ rows, price, loading, onTap, showAll, toggleAll }: {
   );
 }
 
-function Builder({ ticker, exp, legs, setLegs, analysis, analyzing, applyTemplate, tplLoading, goChain }: {
-  ticker: string; exp: string | null; legs: Leg[]; setLegs: React.Dispatch<React.SetStateAction<Leg[]>>; analysis: any; analyzing: boolean;
+function Builder({ ticker, exp, tplName, legs, setLegs, analysis, analyzing, applyTemplate, tplLoading, goChain }: {
+  ticker: string; exp: string | null; tplName: string | null; legs: Leg[]; setLegs: React.Dispatch<React.SetStateAction<Leg[]>>; analysis: any; analyzing: boolean;
   applyTemplate: (t: string) => void; tplLoading: string | null; goChain: () => void;
 }) {
   const setQty = (i: number, d: number) => setLegs((p) => p.map((l, j) => (j === i ? { ...l, qty: Math.max(1, Math.min(100, l.qty + d)) } : l)));
@@ -295,7 +297,7 @@ function Builder({ ticker, exp, legs, setLegs, analysis, analyzing, applyTemplat
         </View>
       ) : null}
       <SaveStrategySheet visible={saveOpen} onClose={() => setSaveOpen(false)} ticker={ticker} expiration={exp}
-        legs={legs} defaultName={`${ticker} ${multi ? "multi-expiry" : ""} strategy`.replace("  ", " ")} />
+        legs={legs} strategyType={tplName} defaultName={`${ticker} ${multi ? "multi-expiry" : ""} strategy`.replace("  ", " ")} />
     </View>
   );
 }

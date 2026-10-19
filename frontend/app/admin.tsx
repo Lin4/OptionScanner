@@ -78,6 +78,11 @@ export default function Admin() {
                   <Text style={s.sub}>{u.name || "—"} · now <Text style={{ fontWeight: "800", color: colors.onSurface }}>{String(u.tier).toUpperCase()}</Text>{u.plan_source ? ` via ${u.plan_source}` : ""}{u.is_admin ? " · admin" : ""}</Text>
                 </View>
               </View>
+              <Pressable testID={`admin-detail-${u.email}`} onPress={() => router.push(`/admin-user/${u.user_id}` as any)} style={s.detailLink}>
+                <Icon name="user" size={13} color={colors.brandPrimary} />
+                <Text style={s.detailText}>Activity, strategies & plan history</Text>
+                <Icon name="chevron-right" size={14} color={colors.brandPrimary} />
+              </Pressable>
               <View style={s.chips}>
                 {PLANS.map((p) => {
                   const on = (u.plan || "free") === p || (p === "free" && !["simple", "advance", "expert"].includes(u.plan));
@@ -187,7 +192,9 @@ const s = StyleSheet.create({
   card: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.sm },
   email: { fontSize: 14, fontWeight: "800", color: colors.onSurface },
   sub: { fontSize: 11, color: colors.muted, marginTop: 2 },
-  chips: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
+  chips: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm },
+  detailLink: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 36, marginTop: spacing.xs },
+  detailText: { flex: 1, fontSize: 12, fontWeight: "700", color: colors.brandPrimary },
   chip: { flex: 1, height: 40, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
   chipOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
   chipText: { fontSize: 11, fontWeight: "800", color: colors.onSurface },

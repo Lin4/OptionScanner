@@ -38,8 +38,8 @@ export const toThreshold = (t: Thr) => {
   return v > 0 ? { mode: t.mode, value: v } : null;
 };
 
-export function SaveStrategySheet({ visible, onClose, ticker, expiration, legs, defaultName }: {
-  visible: boolean; onClose: () => void; ticker: string; expiration: string | null; legs: any[]; defaultName: string;
+export function SaveStrategySheet({ visible, onClose, ticker, expiration, legs, defaultName, strategyType }: {
+  visible: boolean; onClose: () => void; ticker: string; expiration: string | null; legs: any[]; defaultName: string; strategyType?: string | null;
 }) {
   const router = useRouter();
   const [name, setName] = useState("");
@@ -53,7 +53,7 @@ export function SaveStrategySheet({ visible, onClose, ticker, expiration, legs, 
     try {
       await api("/api/strategies", {
         method: "POST",
-        body: JSON.stringify({ name: (name || defaultName).trim(), ticker, expiration, legs, target: toThreshold(target), stop: toThreshold(stop) }),
+        body: JSON.stringify({ name: (name || defaultName).trim(), ticker, expiration, legs, target: toThreshold(target), stop: toThreshold(stop), strategy_type: strategyType || undefined }),
       });
       toast("Strategy saved — tracking live in Portfolio", "success");
       onClose();
