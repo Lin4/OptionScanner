@@ -14,20 +14,21 @@ const INF = 100000;
 export type Features = {
   scans_per_day: number; alerts: number; smart_alerts: boolean; custom_period: boolean; collateral_views: boolean;
   ai_explain: boolean; backtest: boolean; day_lab: boolean; voice: boolean; daily_push: boolean; strategy_tier: number;
+  ai_chat_per_day: number; ai_deep_per_day: number;
 };
-const base = { smart_alerts: false, custom_period: false, collateral_views: false, ai_explain: false, backtest: false, day_lab: false, voice: false, daily_push: false };
+const base = { smart_alerts: false, custom_period: false, collateral_views: false, ai_explain: false, backtest: false, day_lab: false, voice: false, daily_push: false, ai_chat_per_day: 0, ai_deep_per_day: 0 };
 export const FEATURES: Record<Tier, Features> = {
   expired: { ...base, scans_per_day: 0, alerts: 0, strategy_tier: 0 },
   trial: { ...base, scans_per_day: 5, alerts: 3, strategy_tier: 1 },
   simple: { ...base, scans_per_day: 10, alerts: 3, strategy_tier: 1 },
-  advance: { scans_per_day: INF, alerts: 20, smart_alerts: true, custom_period: true, collateral_views: true, ai_explain: true, backtest: true, day_lab: false, voice: false, daily_push: false, strategy_tier: 3 },
-  expert: { scans_per_day: INF, alerts: INF, smart_alerts: true, custom_period: true, collateral_views: true, ai_explain: true, backtest: true, day_lab: true, voice: true, daily_push: true, strategy_tier: 4 },
+  advance: { scans_per_day: INF, alerts: 20, smart_alerts: true, custom_period: true, collateral_views: true, ai_explain: true, backtest: true, day_lab: false, voice: false, daily_push: false, strategy_tier: 3, ai_chat_per_day: 30, ai_deep_per_day: 5 },
+  expert: { scans_per_day: INF, alerts: INF, smart_alerts: true, custom_period: true, collateral_views: true, ai_explain: true, backtest: true, day_lab: true, voice: true, daily_push: true, strategy_tier: 4, ai_chat_per_day: 100, ai_deep_per_day: 25 },
 };
 
 export const PLAN_CARDS = [
   { id: "simple", name: "Simple", price: 9, features: ["10 scans a day", "Covered calls & cash-secured puts", "Swing & long-term stock analysis", "3 price alerts", "Learn & live track record"] },
-  { id: "advance", name: "Advance", price: 29, features: ["Unlimited scans", "All spreads & iron condors", "Custom periods", "Collateral & margin views", "70%+ smart alerts · 20 alerts", "AI explanations & backtest"] },
-  { id: "expert", name: "Expert", price: 79, features: ["Everything in Advance", "Naked Sell Put, Sell Call, Short Strangle", "Day-trade lab", "Voice (listen & speak)", "Daily-pick push · unlimited alerts"] },
+  { id: "advance", name: "Advance", price: 29, features: ["Unlimited scans", "All spreads & iron condors", "Custom periods", "Collateral & margin views", "70%+ smart alerts · 20 alerts", "AI explanations & backtest", "Ask AI chat · 30 questions/day (5 deep)"] },
+  { id: "expert", name: "Expert", price: 79, features: ["Everything in Advance", "Naked Sell Put, Sell Call, Short Strangle", "Day-trade lab", "Voice (listen & speak)", "Daily-pick push · unlimited alerts", "Ask AI · 100 questions/day (25 deep with Claude Opus)"] },
 ];
 
 export const tierLabel = (t: Tier) => (t === "trial" ? "Free trial" : t === "expired" ? "Trial ended" : t.charAt(0).toUpperCase() + t.slice(1));

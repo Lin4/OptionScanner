@@ -13,6 +13,7 @@ import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate } from "@/src/plans";
 import { StrategiesList, ClosedHistory } from "@/src/StrategiesList";
+import { AskAIButton } from "@/src/ChatParts";
 
 export default function PortfolioGated() {
   return <PlanGate><Portfolio /></PlanGate>;
@@ -69,6 +70,10 @@ function Portfolio() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brandPrimary} />}
       >
         <StrategiesList items={strats.items} total={strats.total_pnl} onChanged={load} />
+        {strats.items.length ? (
+          <AskAIButton testID="portfolio-ask-ai" label="Ask AI to review my open trades"
+            prompt="Review my open trades: which look healthy, which need attention, and what should I watch this week?" />
+        ) : null}
         <ClosedHistory items={strats.closed} archived={strats.archived} insights={strats.insights} total={strats.realized_total} onChanged={load} />
         {!strats.items.length && !loading ? (
           <Pressable testID="strategies-empty" onPress={() => router.push("/(tabs)/chain" as any)} style={styles.stratEmpty}>

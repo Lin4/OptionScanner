@@ -106,9 +106,15 @@ function Discover() {
             <Text style={styles.hello}>Hi, {user?.name?.split(" ")[0] || "trader"}</Text>
             <Text style={styles.title}>Discover</Text>
           </View>
-          <Pressable testID="go-profile" onPress={() => router.push("/profile" as any)} style={styles.avatar}>
-            <Text style={styles.avatarText}>{(user?.name || user?.email || "?").slice(0, 1).toUpperCase()}</Text>
-          </Pressable>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+            <Pressable testID="go-assistant" onPress={() => router.push("/assistant" as any)} style={styles.askBtn} accessibilityLabel="Ask AI">
+              <Icon name="zap" size={15} color={colors.brandPrimary} />
+              <Text style={styles.askText}>Ask AI</Text>
+            </Pressable>
+            <Pressable testID="go-profile" onPress={() => router.push("/profile" as any)} style={styles.avatar}>
+              <Text style={styles.avatarText}>{(user?.name || user?.email || "?").slice(0, 1).toUpperCase()}</Text>
+            </Pressable>
+          </View>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modeRow}>
           {[{ id: "best", label: "Best opportunities" }, { id: "find", label: "Find stocks" }].map((m) => {
@@ -271,6 +277,8 @@ const styles = StyleSheet.create({
   hello: { fontSize: 11, color: colors.muted, textTransform: "uppercase", letterSpacing: 1, fontWeight: "700" },
   title: { fontSize: 26, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
   avatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  askBtn: { flexDirection: "row", alignItems: "center", gap: 5, height: 40, paddingHorizontal: spacing.md, borderRadius: 20, backgroundColor: colors.brandSecondary, borderWidth: 1, borderColor: colors.brandPrimary },
+  askText: { fontSize: 13, fontWeight: "800", color: colors.brandPrimary },
   avatarText: { color: colors.onBrandPrimary, fontWeight: "800" },
   modeRow: { gap: spacing.sm, paddingTop: spacing.md, paddingRight: spacing.lg },
   modeChip: { height: 36, paddingHorizontal: spacing.md, borderRadius: radius.pill, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center", flexShrink: 0, borderWidth: 1, borderColor: colors.border },

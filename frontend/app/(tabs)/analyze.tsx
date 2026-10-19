@@ -17,6 +17,7 @@ import { ACCOUNTS, Chips, Label, OptionInsights, accountLabel } from "@/src/scre
 import { FinancialsChart, ValuationMeasures, PeerComparison, BalanceSheet, OptiIQCard } from "@/src/financials";
 import { OptiScoreCard, PlanCard, ValidationCard, ScanCard, PipelineStrip } from "@/src/quality";
 import { money } from "@/src/quantcharts";
+import { AskAIButton } from "@/src/ChatParts";
 
 const STRATS = ["auto", "Cash Secured Put", "Covered Call", "Bull Put Spread", "Bear Call Spread", "Iron Condor", "Bull Call Spread", "Bear Put Spread", "Long Call Butterfly", "Long Call", "Long Put", "Long Straddle", "Long Strangle", "Sell Put", "Sell Call", "Short Strangle"];
 
@@ -273,6 +274,8 @@ function OptionsLab({ r }: { r: any }) {
       <PlanCard plan={r.plan} pop={r.pop_calibrated ?? r.pop} />
       <ValidationCard v={r.validation} pop={r.pop} />
       <ScanCard scan={r.scan} />
+      <AskAIButton testID="analyze-ask-ai" ticker={r.ticker} label={`Ask AI about this ${r.ticker} ${r.strategy}`}
+        prompt={`Explain this ${r.ticker} ${r.strategy}: is it worth taking, and what's the biggest risk?`} />
 
       {/* Payoff chart */}
       <Text style={styles.sectionLabel}>Payoff at expiration</Text>

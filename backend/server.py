@@ -48,6 +48,7 @@ import quant
 import market
 import signup
 import account
+import assistant
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -1187,6 +1188,7 @@ async def startup():
         await db.user_sessions.create_index("user_id")
         await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
         await signup.ensure_indexes(db)
+        await assistant.ensure_indexes(db)
         await db.watchlist.create_index([("user_id", 1), ("ticker", 1)], unique=True)
         await db.alerts.create_index("user_id")
         await db.alerts.create_index("alert_id", unique=True)
@@ -1228,6 +1230,93 @@ chain.register(api_router, get_user=get_user_from_token, get_quote=get_quote)
 broadcasts.register(api_router, db=db, get_user=get_user_from_token, send_push=send_push, logger=logger)
 STRATS = strategies.register(api_router, db=db, get_user=get_user_from_token, get_quote=get_quote, send_push=send_push,
                              logger=logger, market_open_now=extras.market_open_now)
+
+
+# ========== ASK AI (Claude) ==========
+_r1 = lambda v, n=1: round(v, n) if isinstance(v, (int, float)) else v
+
+
+async def ai_ticker_context(tk: str, authorization: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Live numbers for the AI assistant: quote, fundamentals, scan, and the engine's best idea (the model may only quote these)."""
+    try:
+        r = (await ticker_options(TickerOptionsReq(ticker=tk), authorization))["result"]
+    except Exception:
+        r = None
+    async with httpx.AsyncClient() as client:
+        q, m, e = await asyncio.gather(get_quote(client, tk), get_metrics(client, tk), get_earnings(client, tk), return_exceptions=True)
+    q = q if isinstance(q, dict) else {}
+    if not q.get("price"):
+        return None
+    m = m if isinstance(m, dict) else {}
+    e = e if isinstance(e, dict) else {}
+    out: Dict[str, Any] = {
+        "ticker": tk, "name": UNIVERSE_INDEX.get(tk, {}).get("name", tk), "sector": UNIVERSE_INDEX.get(tk, {}).get("sector"),
+        "price": q["price"], "change_pct": _r1(q.get("change_pct"), 2), "day_range": [q.get("low"), q.get("high")],
+        "fundamentals": {k: _r1(m.get(k), 2) for k in ("pe_ttm", "forward_pe", "eps_ttm", "revenue_growth_ttm", "net_profit_margin",
+                                                        "roe_ttm", "debt_to_equity", "dividend_yield", "beta", "52w_high", "52w_low", "market_cap")},
+        "next_earnings": e.get("date"),
+    }
+    if r:
+        sc, v = r.get("scan") or {}, r.get("validation") or {}
+        bt = v.get("backtest") or {}
+        p = r.get("plan") or {}
+        vol = sc.get("volatility") or {}
+        flow = sc.get("options_activity") or {}
+        out["scan"] = {
+            "liquidity": (sc.get("liquidity") or {}).get("grade"),
+            "volatility": {k: vol.get(k) for k in ("atm_iv", "hv20", "hv60", "iv_hv_ratio", "iv_rank", "iv_rank_source")},
+            "options_flow": {k: flow.get(k) for k in ("activity", "tone", "put_call_volume", "unusual")} if flow else None,
+            "fundamentals_score": (sc.get("fundamentals") or {}).get("score"), "trend": sc.get("trend"), "flags": sc.get("flags"),
+        }
+        out["best_idea"] = {
+            "strategy": r["strategy"], "expiration": r.get("expiration"),
+            "legs": [f"{l['action']} {l.get('qty', 1)} {l['type']} ${l['strike']} exp {l.get('exp')} @ ${l.get('fill')}" for l in r.get("legs") or [] if l.get("type") != "Stock"]
+                    + [f"{l['action']} {l.get('qty', 100)} shares" for l in r.get("legs") or [] if l.get("type") == "Stock"],
+            "premium": r.get("premium"), "premium_type": r.get("premium_type"), "max_profit": r.get("max_profit"),
+            "max_loss": r.get("max_loss"), "breakevens": r.get("breakevens"), "pop_pct": r.get("pop"),
+            "pop_calibrated_pct": r.get("pop_calibrated"), "optiscore": r.get("optiscore"), "optiscore_grade": r.get("optiscore_grade"),
+            "pillars": {k: _r1((r.get("pillars") or {}).get(k)) for k in ("expected_return", "risk", "premium_quality", "user_fit")},
+            "passes_user_filters": r.get("passes_filters"), "failed_filters": r.get("failed_filters"),
+            "plan": {"entry": (p.get("entry") or {}).get("conditions"), "take_profit": (p.get("take_profit") or {}).get("text"),
+                     "stop": (p.get("stop") or {}).get("text"), "invalidation": (p.get("invalidation") or {}).get("text"),
+                     "time_exit": (p.get("time_exit") or {}).get("text"),
+                     "contracts": (p.get("sizing") or {}).get("contracts"), "risk_budget": (p.get("sizing") or {}).get("risk_budget")},
+            "backtest_on_this_ticker": {k: bt.get(k) for k in ("hold_to_expiry", "managed")} if bt else None,
+            "costs": {k: (v.get("costs") or {}).get(k) for k in ("pct_of_max_profit", "grade")},
+            "worst_stress_test": (v.get("stress") or {}).get("worst"),
+            "risks": (r.get("risks") or [])[:3], "why": r.get("why"),
+        }
+        out["alternatives"] = [{k: a.get(k) for k in ("strategy", "pop", "optiscore", "max_profit", "max_loss", "passes")}
+                               for a in (r.get("alternatives") or [])[:4]]
+    return out
+
+
+async def ai_user_context(user: Dict[str, Any]) -> Dict[str, Any]:
+    q = user.get("questionnaire") or {}
+    d = user_defaults(user)
+    rows = await db.strategies.find({"user_id": user["user_id"]}, {"_id": 0, "history": 0, "rolls": 0, "exit_legs": 0}) \
+        .sort("created_at", -1).to_list(100)
+    open_rows = [s for s in rows if s.get("status") == "open"][:12]
+    closed = [s for s in rows if s.get("status") == "closed"]
+    return {
+        "plan": billing.compute_access(user)["tier"], "experience": q.get("experience"), "risk_tolerance": q.get("risk_tolerance"),
+        "account_size": d["account_size"], "account_type": q.get("account_type"),
+        "options_level": d["options_level"], "options_level_label": LEVEL_NAMES.get(d["options_level"]),
+        "open_strategies": [{
+            "name": s.get("name"), "ticker": s.get("ticker"), "type": s.get("strategy_type"),
+            "legs": [f"{l['action']} {l['qty']} {l['type']} ${l['strike']} exp {l['expiration']} @ ${l['price']}" for l in s.get("legs") or []],
+            "opened_at_underlying": s.get("entry_underlying"), "net_premium": s.get("net_premium"), "premium_type": s.get("premium_type"),
+            "max_profit": s.get("max_profit"), "max_loss": s.get("max_loss"), "pop_at_entry": s.get("pop"), "expiration": s.get("expiration"),
+            "target": s.get("target"), "stop": s.get("stop"),
+            "last_mark": {k: (s.get("last_mark") or {}).get(k) for k in ("price", "pnl", "pnl_pct")} if s.get("last_mark") else None,
+        } for s in open_rows],
+        "closed_summary": {"count": len(closed), "wins": sum(1 for s in closed if (s.get("realized_pnl") or 0) > 0),
+                           "total_realized_pnl": round(sum(s.get("realized_pnl") or 0 for s in closed), 2)},
+    }
+
+
+assistant.register(api_router, db=db, get_user=get_user_from_token, access_for=billing.compute_access,
+                   ticker_context=ai_ticker_context, user_context=ai_user_context, universe=set(UNIVERSE_INDEX), logger=logger)
 
 
 app.include_router(api_router)

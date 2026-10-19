@@ -17,15 +17,20 @@ INF = 100000
 
 FEATURES: Dict[str, Dict[str, Any]] = {
     "expired": {"scans_per_day": 0, "alerts": 0, "smart_alerts": False, "custom_period": False, "collateral_views": False,
-                "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 0},
+                "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 0,
+                "ai_chat_per_day": 0, "ai_deep_per_day": 0},
     "trial": {"scans_per_day": 5, "alerts": 3, "smart_alerts": False, "custom_period": False, "collateral_views": False,
-              "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 1},
+              "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 1,
+              "ai_chat_per_day": 0, "ai_deep_per_day": 0},
     "simple": {"scans_per_day": 10, "alerts": 3, "smart_alerts": False, "custom_period": False, "collateral_views": False,
-               "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 1},
+               "ai_explain": False, "backtest": False, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 1,
+              "ai_chat_per_day": 0, "ai_deep_per_day": 0},
     "advance": {"scans_per_day": INF, "alerts": 20, "smart_alerts": True, "custom_period": True, "collateral_views": True,
-                "ai_explain": True, "backtest": True, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 3},
+                "ai_explain": True, "backtest": True, "day_lab": False, "voice": False, "daily_push": False, "strategy_tier": 3,
+                "ai_chat_per_day": 30, "ai_deep_per_day": 5},
     "expert": {"scans_per_day": INF, "alerts": INF, "smart_alerts": True, "custom_period": True, "collateral_views": True,
-               "ai_explain": True, "backtest": True, "day_lab": True, "voice": True, "daily_push": True, "strategy_tier": 4},
+               "ai_explain": True, "backtest": True, "day_lab": True, "voice": True, "daily_push": True, "strategy_tier": 4,
+               "ai_chat_per_day": 100, "ai_deep_per_day": 25},
 }
 # strategy_tier: 1 = covered calls + CSPs, 3 = + all spreads/condors/long options, 4 = + naked selling
 

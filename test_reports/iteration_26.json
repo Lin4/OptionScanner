@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 26 — Ask AI (Claude) assistant. Tested backend streaming SSE chat (quick=Sonnet 5.5, deep=Opus 5.5), chat CRUD, plan-gating (403), daily-limit (429), validation (401/422), ticker reuse in follow-ups, cross-user isolation (404). 13/13 pytest cases pass in ~42s. Frontend (390x844 mobile): login → Discover 'go-assistant' → /assistant empty state, 4 suggestion chips, Quick/Deep mode toggle, chat-input + chat-send; sent a short SPY question → user+AI bubbles rendered, chat-live-SPY chip rendered, 'N left today' usage displayed, chat-history sheet lists chats, chat-open-<id> reopens, chat-delete-<id> removes, chat-new resets. Analyze → Options Lab → AAPL → Analyze → analyze-ask-ai deep-links to /assistant?ticker=AAPL&prompt=... with chat-pinned 'Live data for AAPL included' and prefilled input. Trial user visiting /assistant sees chat-locked + chat-upgrade. Regression: Discover scan button renders; /upgrade mentions 'Ask AI'. Portfolio has no open trades for trader so portfolio-ask-ai is correctly absent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter26_assistant.py",
+    "/app/test_reports/pytest/iteration26_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "assistant.py line 174 (tickers update): on follow-up without any detected ticker, `tickers = tickers[:MAX_TICKERS] or (c.get('tickers') or [])[-1:]` correctly falls back to chat's last ticker. Verified in test_02_followup_reuses_ticker.",
+    "assistant.py uses `message_id` as app-level identifier and excludes Mongo `_id` via `_iso` helper and projections — ObjectId leakage safe.",
+    "assistant.py streaming consumes `TextDelta` / `StreamDone` — on empty answer raises RuntimeError and marks user message `failed:True` so quota isn't consumed. Good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter26_assistant.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Created 1 trial user `delivered+locktest769f726e@resend.dev` (cleaned up afterwards). Inserted/removed 30 fake ai_messages for a transiently-promoted test user to force 429. Trader test chats deleted during tests.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_iter26_assistant.py uses pytest-xdist loadscope: all chat-flow tests are in a single class (TestChatFlow) with ordered test_01..test_07 to share chat_id state within one worker. Trial-user fixture upserts email_verifications by `email` key (not `_id`). The 429 test temporarily promotes the trial user to `advance` in Mongo then reverts. Keep real Claude calls modest (~5 quick + 1 deep = ~1 min).",
+  "rca_of_issue": "N/A — all 13 backend tests and all 7 frontend UI checks passed."
+}
