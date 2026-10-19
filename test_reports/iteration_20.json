@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 20 verified all 4 new features end-to-end. Backend (12/12 pytest pass): (1) GET /api/admin/stats returns the full shape — total_users, tiers{trial,simple,advance,expert,expired}, paid, mrr, signups{24h,7d,30d}, active{24h,7d,30d}, signups_daily (14 entries), open_strategies; non-admin -> 403; hitting /api/auth/me as trader bumps users.last_active_at so admin stats shows active.24h>=1 (observed active.24h=2). (2) POST /api/strategies/{id}/close uses chain bids/asks — exit_price on Buy legs matches chain bid, Sell legs matches ask (within $0.05); second close -> 400; strategy moves from items[] to closed[] in GET /api/strategies with history list of {date,pnl} points and realized_total=sum(final_pnl); cross-user close/roll both -> 404. (3) POST /api/strategies/{id}/roll preview returns {from,to,closing,opening,net,net_type,fees,realized_pnl}; confirm=true moves legs to the new expiration, stores realized_pnl on the strategy, rolls length==1; rolling to an earlier/equal expiration -> 400; rolling to an unlisted date (2099-12-19) -> 400. (4) history list ships back as [{date,pnl},...]. Frontend (Expo web, mobile viewport 390x844): logged in as lingesa4 -> Profile shows admin-open -> Admin screen renders admin-insights with kpi-users=27, active-24h=2, signups-7d=5, signups-chart (14 bars), plan-counts with tier-count-{trial=4,simple=0,advance=1,expert=2,expired=20}, user search still works. Logged in as trader -> Chain -> Strategy segment -> tpl-Bull-Put-Spread -> save-strategy opens sheet -> save-confirm routed to /portfolio where strategy-toggle expands and shows daily-pnl-chart. strategy-roll opens RollSheet with 12 roll-exp- chips; picking a later date shows roll-preview+roll-net ('-$252'); roll-confirm succeeds (card afterwards shows '1 roll'). strategy-close: first tap flips the button to 'Tap to confirm' (red), second tap closes -> closed-history section lists the closed strategy with final_pnl and realized-total='-$557' (sum of two closed strategies). Trader restored to plan 'advance' and all TEST_ strategies (open + closed) cleaned up from Mongo. No deprecated expo packages / react-native issues observed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter20_features.py",
+    "/app/test_reports/pytest/iteration20_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "strategies.py close_strategy() calls close_px() serially per leg (no asyncio.gather). For strategies with many legs this adds latency because each call may do its own tradier.chain_for. Consider deduping chains per expiration and gathering fills in parallel like list_strategies does.",
+    "strategies.py roll_strategy() picks the nearest listed strike by abs(k - l['strike']) but does NOT re-use the original leg width. For Bull Put Spreads with a 5-pt wide short/long pair this is fine; for Iron Condors or ratio spreads the chosen strikes may bunch together if the live chain is sparse. Low priority (preview + confirm pattern protects the user).",
+    "strategies.py roll preview recomputes a bs_greeks fallback price when fill() returns None, but requires at least one quoted strike (raises 502 otherwise). Good — but the preview response does not include a 'live' flag at the top level (only per-leg via close_px). Front-end RollSheet already shows net, so no immediate issue.",
+    "No DELETE endpoint for closed strategies — once closed, a strategy sits in closed[] forever (bounded to 50 by GET). Users may want to clear their realized P&L history or delete bad test closes. Consider adding DELETE /api/strategies/{id} that works for closed strategies as well (today it works for both because the handler doesn't filter on status — verified).",
+    "frontend StrategiesList.tsx 'Tap to confirm' close uses a local confirmClose state with no timeout — if the user taps once and walks away, the button stays armed indefinitely. Consider auto-resetting after ~3s like the pattern used elsewhere."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter20_features.py (new)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100%"},
+  "seed_data_creation": "Created TEST_close_bps / TEST_roll_bps / TEST_cross_close / TEST_UI_bps_* strategies for trader. All open ones deleted via DELETE /api/strategies, both closed ones deleted directly from Mongo (no API endpoint exists to delete closed strategies — see critical_code_review_comments #4). trader@optiscreen.app plan confirmed back to 'advance' via /api/auth/me.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Market is CLOSED during the test window — Tradier chains have wide bid/ask spreads so close/roll P&Ls come back strongly negative (-$150 to -$300 for Bull Put Spreads). This is expected and matches the agent-to-agent context note. Admin stats signups_daily is a list of 14 {date,count} entries always, never missing. Roll preview is returned under the 'preview' key: pv.json()['preview']. Close response has top-level final_pnl/exit_legs/exit_fees. Strategies list wraps history as a LIST of {date,pnl} points (not a dict) — the Mongo document stores it as a dict and the API converts on read. There is no API endpoint to delete closed strategies, so after your tests close any TEST_ strategy you should drop them from Mongo directly via db.strategies.delete_many({'status':'closed','name':{'$regex':'^TEST_'}}).",
+  "rca_of_issue": "No functional regressions found. All 4 features work as specified by the problem statement."
+}

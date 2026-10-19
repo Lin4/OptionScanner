@@ -114,3 +114,9 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - backend/strategies.py: POST/GET/PATCH/DELETE /api/strategies (live mark from Tradier mids, P&L, target/stop in usd or pct of max profit/max risk). Hits create alert_events kind strategy_target/strategy_stop + push; checked on GET and by 5-min loop in market hours.
 - Admin: users.is_admin (lingesa4@gmail.com). GET /api/admin/users?q=, POST /api/admin/users/{uid}/plan {plan}. Frontend app/admin.tsx, entry in Profile.
 - Frontend: src/SaveStrategy.tsx (save sheet), src/StrategiesList.tsx (Portfolio cards), Alerts tab shows "Recent alerts" feed incl. strategy events.
+
+## Update (Jun 2026) - Admin insights, close/roll, daily P&L
+- users.last_active_at updated (throttled 10 min) in get_user_from_token. GET /api/admin/stats: total_users, tiers, paid, mrr, signups/active (24h/7d/30d), signups_daily (14d), open_strategies. Admin screen shows Insights block.
+- POST /api/strategies/{id}/close: realistic fills (Buy legs at bid, Sell legs at ask, intrinsic if expired) + exit fees -> status closed, final_pnl, exit_legs. GET /api/strategies returns items(open), closed[], realized_total; history as list [{date,pnl}] (one point/day).
+- POST /api/strategies/{id}/roll {expiration, confirm}: soonest-expiring option legs closed at fills and reopened at nearest listed strikes on the later expiry; preview shows net credit/debit, fees, realized; confirm updates legs, realized_pnl, rolls[], recomputed max P/L, resets fired.
+- Frontend: StrategiesList (DailyPnLChart, Close two-tap confirm, Roll sheet src/RollSheet.tsx), ClosedHistory in Portfolio.

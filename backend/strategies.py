@@ -2,7 +2,7 @@
 from __future__ import annotations
 import asyncio
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 import httpx
@@ -10,8 +10,8 @@ from fastapi import Header, HTTPException
 from pydantic import BaseModel, Field
 
 import tradier
-from chain import LegIn, _tk, analyze_position, prepare_legs
-from engine import RISK_FREE
+from chain import LegIn, _tk, _exp, analyze_position, prepare_legs
+from engine import RISK_FREE, FEE_PER_CONTRACT
 from options_math import bs_greeks
 
 PLANS = ("free", "simple", "advance", "expert")
@@ -34,6 +34,11 @@ class SaveStrategyReq(BaseModel):
 class UpdateStrategyReq(BaseModel):
     target: Optional[Threshold] = None
     stop: Optional[Threshold] = None
+
+
+class RollReq(BaseModel):
+    expiration: str
+    confirm: bool = False
 
 
 class AdminPlanReq(BaseModel):
@@ -86,13 +91,48 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
                     live = False
                     px = bs_greeks(S, K, max(left, 0.5) / 365, l.get("iv") or 0.3, r=RISK_FREE, call=l["type"] == "Call")["price"]
             value += sg * qty * px
-        pnl = round((value - s["entry_value"]) * 100 - s["fees"], 2)
+        pnl = round((value - s["entry_value"]) * 100 - s["fees"] + (s.get("realized_pnl") or 0), 2)
         tgt = threshold_usd(s.get("target"), s.get("max_profit") if s.get("max_profit") is not None else s["cost_basis"])
         stp = threshold_usd(s.get("stop"), s.get("max_loss") if s.get("max_loss") is not None else s["cost_basis"])
         risk = abs(s["max_loss"]) if s.get("max_loss") else abs(s["cost_basis"]) or None
         return {"price": round(S, 2), "pnl": pnl, "pnl_pct": round(pnl / risk * 100, 1) if risk else None,
                 "market_value": round(value * 100, 2), "live": live, "target_usd": tgt, "stop_usd": stp,
                 "as_of": datetime.now(timezone.utc).isoformat()}
+
+    async def record(s: Dict, m: Dict) -> None:
+        """One P&L point per calendar day (last mark of the day wins)."""
+        if "pnl" in m:
+            day = date.today().isoformat()
+            s.setdefault("history", {})[day] = m["pnl"]
+            await db.strategies.update_one({"strategy_id": s["strategy_id"]}, {"$set": {f"history.{day}": m["pnl"]}})
+
+    async def own(sid: str, user: Dict) -> Dict:
+        s = await db.strategies.find_one({"strategy_id": sid, "user_id": user["user_id"]}, {"_id": 0})
+        if not s:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        return s
+
+    def fill(o: Dict, buy: bool) -> Optional[float]:
+        """Realistic fill: buying pays the ask, selling receives the bid."""
+        px = o.get("ask") if buy else o.get("bid")
+        return float(px) if px and px > 0 else None
+
+    async def close_px(client, tk: str, l: Dict, S: float, chains: Dict) -> Dict[str, Any]:
+        """Price to exit one leg: Buy legs sell at bid, Sell legs buy back at ask; intrinsic if expired."""
+        if l["type"] == "Stock":
+            return {"px": S, "fee": 0.0, "live": True}
+        left = (date.fromisoformat(l["expiration"]) - date.today()).days
+        K = l["strike"]
+        if left < 0:
+            return {"px": max(S - K, 0) if l["type"] == "Call" else max(K - S, 0), "fee": 0.0, "live": True}
+        if l["expiration"] not in chains:
+            chains[l["expiration"]] = await tradier.chain_for(client, tk, l["expiration"], S)
+        o = ((chains[l["expiration"]] or {}).get("calls" if l["type"] == "Call" else "puts") or {}).get(float(K)) or {}
+        px = fill(o, buy=l["action"] == "Sell")
+        live = px is not None
+        if px is None:
+            px = bs_greeks(S, K, max(left, 0.5) / 365, l.get("iv") or 0.3, r=RISK_FREE, call=l["type"] == "Call")["price"]
+        return {"px": round(px, 2), "fee": round(l["qty"] * FEE_PER_CONTRACT, 2), "live": live}
 
     async def check_hits(s: Dict, m: Dict) -> List[Dict]:
         if "pnl" not in m or s.get("status") != "open":
@@ -129,6 +169,7 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
                         for s in rows:
                             m = await mark(client, s)
                             await db.strategies.update_one({"strategy_id": s["strategy_id"]}, {"$set": {"last_mark": m}})
+                            await record(s, m)
                             await check_hits(s, m)
             except Exception as ex:
                 logger.warning(f"strategy loop: {ex}")
@@ -157,7 +198,8 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
             "pop": a["pop"], "breakevens": a["breakevens"], "multi_expiry": a["multi_expiry"],
             "expiration": min(l["expiration"] for l in legs if l["type"] != "Stock"),
             "target": req.target.model_dump() if req.target else None, "stop": req.stop.model_dump() if req.stop else None,
-            "fired": {}, "status": "open", "created_at": datetime.now(timezone.utc),
+            "fired": {}, "status": "open", "realized_pnl": 0.0, "rolls": [], "history": {},
+            "created_at": datetime.now(timezone.utc),
         }
         await db.strategies.insert_one(doc)
         doc.pop("_id", None)
@@ -166,16 +208,106 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
     @api_router.get("/strategies")
     async def list_strategies(authorization: Optional[str] = Header(default=None)):
         user = await get_user(authorization)
-        rows = await db.strategies.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+        rows = await db.strategies.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+        open_rows = [r for r in rows if r.get("status") == "open"]
+        closed = sorted([r for r in rows if r.get("status") == "closed"], key=lambda r: r.get("closed_at") or r["created_at"], reverse=True)
         async with httpx.AsyncClient() as client:
-            marks = await asyncio.gather(*[mark(client, s) for s in rows], return_exceptions=True)
+            marks = await asyncio.gather(*[mark(client, s) for s in open_rows], return_exceptions=True)
         new_events = []
-        for s, m in zip(rows, marks):
+        for s, m in zip(open_rows, marks):
             s["mark"] = m if isinstance(m, dict) else {"error": "Mark unavailable"}
+            await record(s, s["mark"])
             new_events += await check_hits(s, s["mark"])
+        for s in rows:
+            s["history"] = [{"date": d, "pnl": v} for d, v in sorted((s.get("history") or {}).items())]
             _iso(s)
-        total = round(sum(s["mark"].get("pnl", 0) for s in rows), 2)
-        return {"items": rows, "total_pnl": total, "new_alerts": len(new_events)}
+        return {"items": open_rows, "closed": closed[:50], "total_pnl": round(sum(s["mark"].get("pnl", 0) for s in open_rows), 2),
+                "realized_total": round(sum(s.get("final_pnl") or 0 for s in closed), 2), "new_alerts": len(new_events)}
+
+    @api_router.post("/strategies/{sid}/close")
+    async def close_strategy(sid: str, authorization: Optional[str] = Header(default=None)):
+        user = await get_user(authorization)
+        s = await own(sid, user)
+        if s.get("status") != "open":
+            raise HTTPException(status_code=400, detail="Strategy already closed")
+        async with httpx.AsyncClient() as client:
+            q = await get_quote(client, s["ticker"])
+            S = float((q or {}).get("price") or 0)
+            if not S:
+                raise HTTPException(status_code=404, detail="No live quote")
+            chains: Dict[str, Any] = {}
+            exits = [await close_px(client, s["ticker"], l, S, chains) for l in s["legs"]]
+        exit_value = sum((1 if l["action"] == "Buy" else -1) * l["qty"] * e["px"] for l, e in zip(s["legs"], exits))
+        exit_fees = round(sum(e["fee"] for e in exits), 2)
+        final = round((exit_value - s["entry_value"]) * 100 - s["fees"] - exit_fees + (s.get("realized_pnl") or 0), 2)
+        day = date.today().isoformat()
+        upd = {"status": "closed", "closed_at": datetime.now(timezone.utc), "final_pnl": final, "exit_underlying": round(S, 2),
+               "exit_fees": exit_fees, "exit_live": all(e["live"] for e in exits),
+               "exit_legs": [{**{k: l[k] for k in ("action", "type", "strike", "qty", "expiration")}, "exit_price": e["px"]}
+                             for l, e in zip(s["legs"], exits)],
+               f"history.{day}": final}
+        await db.strategies.update_one({"strategy_id": sid}, {"$set": upd})
+        return {"ok": True, "final_pnl": final, "exit_fees": exit_fees, "exit_live": upd["exit_live"], "exit_legs": upd["exit_legs"]}
+
+    @api_router.post("/strategies/{sid}/roll")
+    async def roll_strategy(sid: str, req: RollReq, authorization: Optional[str] = Header(default=None)):
+        """Roll the soonest-expiring option legs to a later listed expiration at live fills. confirm=false -> preview."""
+        user = await get_user(authorization)
+        s = await own(sid, user)
+        if s.get("status") != "open":
+            raise HTTPException(status_code=400, detail="Only open strategies can be rolled")
+        new_d = _exp(req.expiration)
+        opts = [l for l in s["legs"] if l["type"] != "Stock"]
+        near = min(l["expiration"] for l in opts)
+        if new_d <= date.fromisoformat(near):
+            raise HTTPException(status_code=400, detail="Pick an expiration later than the current one")
+        async with httpx.AsyncClient() as client:
+            q = await get_quote(client, s["ticker"])
+            S = float((q or {}).get("price") or 0)
+            if not S:
+                raise HTTPException(status_code=404, detail="No live quote")
+            if req.expiration not in await tradier.expirations(client, s["ticker"]):
+                raise HTTPException(status_code=400, detail="Expiration is not listed")
+            nc = await tradier.chain_for(client, s["ticker"], req.expiration, S)
+            if not nc:
+                raise HTTPException(status_code=502, detail="Live chain unavailable for that expiration")
+            chains: Dict[str, Any] = {}
+            out_legs, in_legs = [], []
+            for l in s["legs"]:
+                if l["type"] == "Stock" or l["expiration"] != near:
+                    continue
+                e = await close_px(client, s["ticker"], l, S, chains)
+                side = nc["calls"] if l["type"] == "Call" else nc["puts"]
+                ks = [k for k, o in side.items() if fill(o, buy=l["action"] == "Buy")]
+                if not ks:
+                    raise HTTPException(status_code=502, detail=f"No quotes for {l['type']}s on {req.expiration}")
+                k = min(ks, key=lambda x: abs(x - l["strike"]))
+                o = side[k]
+                g = o.get("greeks") or {}
+                out_legs.append({**l, "exit_price": e["px"], "exit_fee": e["fee"], "live": e["live"]})
+                in_legs.append({"action": l["action"], "type": l["type"], "strike": k, "qty": l["qty"], "expiration": req.expiration,
+                                "price": round(fill(o, buy=l["action"] == "Buy"), 2), "iv": g.get("mid_iv") or g.get("smv_vol") or l.get("iv")})
+        sg = lambda l: (1 if l["action"] == "Buy" else -1) * l["qty"]
+        close_cash = sum(sg(l) * l["exit_price"] for l in out_legs) * 100     # + received when closing longs
+        open_cash = -sum(sg(l) * l["price"] for l in in_legs) * 100           # + received when opening shorts
+        fees = round(sum(l["exit_fee"] for l in out_legs) + sum(l["qty"] for l in in_legs) * FEE_PER_CONTRACT, 2)
+        realized = round(close_cash - sum(sg(l) * l["price"] for l in out_legs) * 100 - fees, 2)
+        preview = {"from": near, "to": req.expiration, "closing": [{k: l[k] for k in ("action", "type", "strike", "qty", "expiration", "price", "exit_price")} for l in out_legs],
+                   "opening": in_legs, "net": round(close_cash + open_cash, 2), "net_type": "credit" if close_cash + open_cash >= 0 else "debit",
+                   "fees": fees, "realized_pnl": realized, "live": all(l["live"] for l in out_legs)}
+        if not req.confirm:
+            return {"preview": preview}
+        keep = [l for l in s["legs"] if l["type"] == "Stock" or l["expiration"] != near]
+        legs = keep + in_legs
+        prepared = [{**l, "dte": max((date.fromisoformat(l["expiration"]) - date.today()).days, 0), "iv": l.get("iv") or 0.3} for l in legs]
+        a = analyze_position([dict(l) for l in prepared], S)
+        entry_value = sum(sg(l) * l["price"] for l in legs)
+        upd = {"legs": legs, "entry_value": entry_value, "realized_pnl": round((s.get("realized_pnl") or 0) + realized, 2),
+               "max_profit": a["max_profit"], "max_loss": a["max_loss"], "breakevens": a["breakevens"], "pop": a["pop"],
+               "multi_expiry": a["multi_expiry"], "cost_basis": a["cost_basis"],
+               "expiration": min(l["expiration"] for l in legs if l["type"] != "Stock"), "fired": {}}
+        await db.strategies.update_one({"strategy_id": sid}, {"$set": upd, "$push": {"rolls": {**preview, "at": datetime.now(timezone.utc)}}})
+        return {"ok": True, "preview": preview}
 
     @api_router.patch("/strategies/{sid}")
     async def update_strategy(sid: str, req: UpdateStrategyReq, authorization: Optional[str] = Header(default=None)):
@@ -217,6 +349,38 @@ def register(api_router, *, db, get_user: Callable, get_quote: Callable, send_pu
             r["tier"] = billing.compute_access(r)["tier"]
             _iso(r)
         return {"items": rows}
+
+    @api_router.get("/admin/stats")
+    async def admin_stats(authorization: Optional[str] = Header(default=None)):
+        await require_admin(authorization)
+        import billing
+        now = datetime.now(timezone.utc)
+        users = await db.users.find({}, {"_id": 0, "plan": 1, "plan_expires_at": 1, "created_at": 1, "last_active_at": 1}).to_list(100000)
+        tiers: Dict[str, int] = {"trial": 0, "simple": 0, "advance": 0, "expert": 0, "expired": 0}
+        def aware(d):
+            return d.replace(tzinfo=timezone.utc) if isinstance(d, datetime) and d.tzinfo is None else d
+        signups = {"24h": 0, "7d": 0, "30d": 0}
+        active = {"24h": 0, "7d": 0, "30d": 0}
+        spans = {"24h": 1, "7d": 7, "30d": 30}
+        daily: Dict[str, int] = {}
+        for u in users:
+            t = billing.compute_access(u)["tier"]
+            tiers[t] = tiers.get(t, 0) + 1
+            c, la = aware(u.get("created_at")), aware(u.get("last_active_at"))
+            for k, d in spans.items():
+                if c and now - c <= timedelta(days=d):
+                    signups[k] += 1
+                if la and now - la <= timedelta(days=d):
+                    active[k] += 1
+            if c and now - c <= timedelta(days=14):
+                day = c.date().isoformat()
+                daily[day] = daily.get(day, 0) + 1
+        days = [(now - timedelta(days=i)).date().isoformat() for i in range(13, -1, -1)]
+        paid = tiers["simple"] + tiers["advance"] + tiers["expert"]
+        mrr = sum(tiers[p] * billing.PLAN_PRICES[p] for p in ("simple", "advance", "expert"))
+        return {"total_users": len(users), "tiers": tiers, "paid": paid, "mrr": round(mrr, 2), "signups": signups,
+                "active": active, "signups_daily": [{"date": d, "count": daily.get(d, 0)} for d in days],
+                "open_strategies": await db.strategies.count_documents({"status": "open"})}
 
     @api_router.post("/admin/users/{uid}/plan")
     async def admin_set_plan(uid: str, req: AdminPlanReq, authorization: Optional[str] = Header(default=None)):

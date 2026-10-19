@@ -12,7 +12,7 @@ import { Sparkline } from "@/src/parts";
 import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate } from "@/src/plans";
-import { StrategiesList } from "@/src/StrategiesList";
+import { StrategiesList, ClosedHistory } from "@/src/StrategiesList";
 
 export default function PortfolioGated() {
   return <PlanGate><Portfolio /></PlanGate>;
@@ -25,13 +25,13 @@ function Portfolio() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [newTicker, setNewTicker] = useState("");
-  const [strats, setStrats] = useState<{ items: any[]; total_pnl: number }>({ items: [], total_pnl: 0 });
+  const [strats, setStrats] = useState<{ items: any[]; total_pnl: number; closed: any[]; realized_total: number }>({ items: [], total_pnl: 0, closed: [], realized_total: 0 });
 
   const load = useCallback(async () => {
     try {
       const [r, st] = await Promise.all([api("/api/watchlist"), api("/api/strategies").catch(() => null)]);
       setItems(r.items || []);
-      if (st) setStrats({ items: st.items || [], total_pnl: st.total_pnl || 0 });
+      if (st) setStrats({ items: st.items || [], total_pnl: st.total_pnl || 0, closed: st.closed || [], realized_total: st.realized_total || 0 });
     } catch (e: any) { toast(e.message || "Failed", "error"); }
     finally { setLoading(false); setRefreshing(false); }
   }, []);
@@ -69,6 +69,7 @@ function Portfolio() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brandPrimary} />}
       >
         <StrategiesList items={strats.items} total={strats.total_pnl} onChanged={load} />
+        <ClosedHistory items={strats.closed} total={strats.realized_total} />
         {!strats.items.length && !loading ? (
           <Pressable testID="strategies-empty" onPress={() => router.push("/(tabs)/chain" as any)} style={styles.stratEmpty}>
             <Icon name="layers" size={18} color={colors.brandPrimary} />

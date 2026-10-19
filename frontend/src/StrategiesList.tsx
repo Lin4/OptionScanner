@@ -6,7 +6,8 @@ import { api } from "./api";
 import { Button } from "./Button";
 import { toast } from "./Toast";
 import { Badge } from "./parts";
-import { money } from "./pnl";
+import { money, DailyPnLChart } from "./pnl";
+import { RollSheet } from "./RollSheet";
 import { ThresholdField, toThreshold, Thr } from "./SaveStrategy";
 import { colors, spacing, radius } from "./theme";
 
@@ -32,6 +33,8 @@ function StrategyCard({ it, onChanged }: { it: any; onChanged: () => void }) {
   const [target, setTarget] = useState<Thr>({ mode: it.target?.mode || "pct", value: it.target ? String(it.target.value) : "" });
   const [stop, setStop] = useState<Thr>({ mode: it.stop?.mode || "pct", value: it.stop ? String(it.stop.value) : "" });
   const [busy, setBusy] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [rollOpen, setRollOpen] = useState(false);
   const m = it.mark || {};
   const pnl = m.pnl ?? 0;
   const up = pnl >= 0;
@@ -47,6 +50,15 @@ function StrategyCard({ it, onChanged }: { it: any; onChanged: () => void }) {
       await api(`/api/strategies/${it.strategy_id}`, { method: "PATCH", body: JSON.stringify({ target: toThreshold(target), stop: toThreshold(stop) }) });
       toast("Alerts updated", "success"); setOpen(false); onChanged();
     } catch (e: any) { toast(e.message || "Failed", "error"); } finally { setBusy(false); }
+  };
+  const close = async () => {
+    if (!confirmClose) { setConfirmClose(true); setTimeout(() => setConfirmClose(false), 4000); return; }
+    setBusy(true);
+    try {
+      const r = await api(`/api/strategies/${it.strategy_id}/close`, { method: "POST" });
+      toast(`Closed at live prices: ${money(r.final_pnl)}`, r.final_pnl >= 0 ? "success" : "info");
+      onChanged();
+    } catch (e: any) { toast(e.message || "Close failed", "error"); } finally { setBusy(false); setConfirmClose(false); }
   };
   const del = async () => {
     try { await api(`/api/strategies/${it.strategy_id}`, { method: "DELETE" }); toast("Strategy removed", "info"); onChanged(); }
@@ -82,6 +94,18 @@ function StrategyCard({ it, onChanged }: { it: any; onChanged: () => void }) {
       </Pressable>
       {open ? (
         <View style={s.detail}>
+          {it.history?.length ? <DailyPnLChart points={it.history} /> : null}
+          {it.realized_pnl ? <Text style={s.leg}>Realized from rolls: <Text style={{ fontWeight: "800", color: it.realized_pnl >= 0 ? colors.success : colors.error }}>{money(it.realized_pnl)}</Text> ({it.rolls?.length || 0} roll{it.rolls?.length === 1 ? "" : "s"})</Text> : null}
+          <View style={s.actions}>
+            <Pressable testID={`strategy-close-${it.strategy_id}`} onPress={close} disabled={busy} style={[s.actBtn, confirmClose && { backgroundColor: colors.error, borderColor: colors.error }]}>
+              <Icon name="check-square" size={14} color={confirmClose ? colors.onError : colors.onSurface} />
+              <Text style={[s.actText, confirmClose && { color: colors.onError }]}>{confirmClose ? "Tap to confirm" : "Close at live"}</Text>
+            </Pressable>
+            <Pressable testID={`strategy-roll-${it.strategy_id}`} onPress={() => setRollOpen(true)} style={s.actBtn}>
+              <Icon name="refresh-cw" size={14} color={colors.onSurface} />
+              <Text style={s.actText}>Roll</Text>
+            </Pressable>
+          </View>
           {it.legs.map((l: any, i: number) => (
             <Text key={i} style={s.leg}>{l.action} {l.qty}× {l.type === "Stock" ? "shares" : `${l.type} ${l.strike} · ${l.expiration}`} @ ${l.price}</Text>
           ))}
@@ -96,11 +120,41 @@ function StrategyCard({ it, onChanged }: { it: any; onChanged: () => void }) {
           </Pressable>
         </View>
       ) : null}
+      <RollSheet it={it} visible={rollOpen} onClose={() => setRollOpen(false)} onDone={onChanged} />
+    </View>
+  );
+}
+
+/** Closed strategies with their final realized result. */
+export function ClosedHistory({ items, total }: { items: any[]; total: number }) {
+  if (!items.length) return null;
+  const wins = items.filter((c) => (c.final_pnl ?? 0) > 0).length;
+  return (
+    <View testID="closed-history" style={{ marginTop: spacing.md }}>
+      <View style={s.head}>
+        <Text style={s.label}>History · {items.length} closed · {Math.round((wins / items.length) * 100)}% won</Text>
+        <Text testID="realized-total" style={[s.total, { color: total >= 0 ? colors.success : colors.error }]}>{money(total)}</Text>
+      </View>
+      {items.map((c) => (
+        <View key={c.strategy_id} testID={`closed-${c.strategy_id}`} style={s.closedRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.closedName} numberOfLines={1}>{c.name}</Text>
+            <Text style={s.sub}>{c.ticker} · closed {c.closed_at ? new Date(c.closed_at).toLocaleDateString() : ""} · ${c.entry_underlying} → ${c.exit_underlying}{c.rolls?.length ? ` · ${c.rolls.length} roll${c.rolls.length > 1 ? "s" : ""}` : ""}</Text>
+          </View>
+          <Text style={[s.closedPnl, { color: (c.final_pnl ?? 0) >= 0 ? colors.success : colors.error }]}>{money(c.final_pnl)}</Text>
+        </View>
+      ))}
     </View>
   );
 }
 
 const s = StyleSheet.create({
+  actions: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.md },
+  actBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, height: 44, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  actText: { fontWeight: "800", color: colors.onSurface, fontSize: 13 },
+  closedRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  closedName: { fontSize: 14, fontWeight: "700", color: colors.onSurface },
+  closedPnl: { fontSize: 15, fontWeight: "800", fontVariant: ["tabular-nums"] },
   head: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.sm },
   label: { fontSize: 11, color: colors.muted, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1 },
   total: { fontSize: 16, fontWeight: "800", fontVariant: ["tabular-nums"] },

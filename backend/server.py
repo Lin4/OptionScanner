@@ -203,10 +203,12 @@ async def get_user_from_token(authorization: Optional[str]) -> Dict[str, Any]:
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    la = user.get("last_active_at")
+    if la is not None and la.tzinfo is None:
+        la = la.replace(tzinfo=timezone.utc)
+    if not la or now_utc() - la > timedelta(minutes=10):  # activity tracking for admin insights (throttled)
+        await db.users.update_one({"user_id": user_id}, {"$set": {"last_active_at": now_utc()}})
     return user
-
-
-# ========== MARKET HELPERS ==========
 CAPITAL_MAP = {"< $5k": 5000, "$5k–$25k": 25000, "$25k–$100k": 100000, "> $100k": 250000}
 ACCOUNT_MAP = {"Cash": "cash", "Margin (Reg T)": "reg_t", "Portfolio margin": "portfolio_margin", "IRA": "ira"}
 _RESULT_CACHE: Dict[str, tuple] = {}
