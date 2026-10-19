@@ -13,6 +13,7 @@ import { Sparkline, Badge } from "@/src/parts";
 import { LoadingSkeleton } from "@/src/charts";
 import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate, usePlan, LockedFeature } from "@/src/plans";
+import { AnnouncementBanner } from "@/src/Announcements";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Filters, ProfileId, PROFILE_INFO, defaultFilters, filtersPayload, FilterPanel, ProfilePicker, Label, accountLabel } from "@/src/screen";
 
@@ -121,6 +122,7 @@ function Discover() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <AnnouncementBanner />
         <View style={styles.filterCard}>
           <Pressable testID="open-track-record" onPress={() => router.push("/track-record" as any)} style={styles.trackLink}>
             <Icon name="check-square" size={16} color={colors.brandPrimary} />

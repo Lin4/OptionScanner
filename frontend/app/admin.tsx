@@ -55,7 +55,13 @@ export default function Admin() {
         <Pressable testID="admin-back" onPress={() => (router.canGoBack() ? router.back() : router.replace("/(tabs)"))} style={s.back}>
           <Icon name="arrow-left" size={20} color={colors.onSurface} />
         </Pressable>
-        <Text style={s.title}>Admin · Plans</Text>
+        <Text style={[s.title, { flex: 1 }]}>Admin · Plans</Text>
+        {!denied ? (
+          <Pressable testID="admin-broadcast-open" onPress={() => router.push("/admin-broadcast" as any)} style={s.bcBtn}>
+            <Icon name="volume-2" size={16} color={colors.onBrandPrimary} />
+            <Text style={s.bcText}>Broadcast</Text>
+          </Pressable>
+        ) : null}
       </View>
       {denied ? (
         <View style={s.center}><Icon name="lock" size={28} color={colors.muted} /><Text style={s.muted}>Admin access only.</Text></View>
@@ -182,6 +188,8 @@ const s = StyleSheet.create({
   tierFill: { height: 8, borderRadius: 4, backgroundColor: colors.brandPrimary },
   tierNum: { width: 32, textAlign: "right", fontSize: 13, fontWeight: "800", color: colors.onSurface, fontVariant: ["tabular-nums"] },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  bcBtn: { flexDirection: "row", alignItems: "center", gap: 6, height: 40, paddingHorizontal: spacing.md, borderRadius: radius.pill, backgroundColor: colors.brandPrimary },
+  bcText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 13 },
   back: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
   title: { fontSize: 20, fontWeight: "800", color: colors.onSurface },
   scroll: { padding: spacing.lg },

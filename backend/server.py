@@ -38,6 +38,7 @@ import billing
 import tradier
 import chain
 import strategies
+import broadcasts
 from engine import (
     STRATEGIES, STRATEGY_META, PROFILES, ACCOUNT_TYPES, EXP_DAYS, MIN_POP_FLOOR, CREDIT_VARIANTS, LEVEL_NAMES, user_options_level,
     volatility_profile, build_idea, default_filters, passes, candidate_strategies, compact,
@@ -1171,6 +1172,7 @@ EXTRAS: Dict[str, Any] = extras.register(
 )
 
 chain.register(api_router, get_user=get_user_from_token, get_quote=get_quote)
+broadcasts.register(api_router, db=db, get_user=get_user_from_token, send_push=send_push, logger=logger)
 STRATS = strategies.register(api_router, db=db, get_user=get_user_from_token, get_quote=get_quote, send_push=send_push,
                              logger=logger, market_open_now=extras.market_open_now)
 

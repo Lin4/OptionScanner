@@ -124,3 +124,7 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 ## Update (Jun 2026) - Admin user detail, history insights, archive/delete
 - plan_events collection (billing.log_plan_event) logged on admin change, Stripe, PayPal, downgrade/free. GET /api/admin/users/{uid}: user, access, profile, activity (scans 14d daily, alerts, watchlist, recent events), strategies (open/closed, realized), plan_history (+ synthetic sign-up), payments. Screen app/admin-user/[uid].tsx (link from admin list).
 - strategies.strategy_type (classify() from legs at save; computed for legacy). GET /api/strategies returns insights {overall, by_type[]} (win rate, avg, avg win/loss, best/worst) over all closed incl. archived, closed (non-archived) and archived lists. POST /api/strategies/{id}/archive {archived}. DELETE works for closed. UI: HistoryInsights + Trades/Archived toggle + archive/delete (two-tap) per row.
+
+## Update (Jun 2026) - Admin broadcasts
+- backend/broadcasts.py: POST/GET /api/admin/broadcasts, DELETE /api/admin/broadcasts/{id} (end), GET /api/announcements (active, audience all or user's tier, not dismissed), POST /api/announcements/{id}/dismiss. Collections broadcasts, broadcast_reads. Optional push to audience.
+- Frontend: app/admin-broadcast.tsx (compose, audience chips, push switch, preview, sent list with reach/dismissed/end), button in Admin header; src/Announcements.tsx banner on Discover.
