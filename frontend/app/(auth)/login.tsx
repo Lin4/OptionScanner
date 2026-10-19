@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Link } from "expo-router";
+import { Link, useRouter } from "expo-router";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import Icon from "@react-native-vector-icons/feather";
@@ -14,6 +14,7 @@ import { colors, spacing, radius } from "@/src/theme";
 
 export default function Login() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { signInEmail, exchangeSessionId } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -24,7 +25,10 @@ export default function Login() {
     if (!email || !password) { toast("Enter email and password", "error"); return; }
     setLoading(true);
     try { await signInEmail(email.trim(), password); }
-    catch (e: any) { toast(e.message || "Login failed", "error"); }
+    catch (e: any) {
+      toast(e.message || "Login failed", "error");
+      if (e.status === 403) router.push({ pathname: "/(auth)/verify-email", params: { email: email.trim().toLowerCase(), resend: "0" } });
+    }
     finally { setLoading(false); }
   };
 

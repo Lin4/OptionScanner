@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Link } from "expo-router";
+import { Link, useRouter } from "expo-router";
 import Icon from "@react-native-vector-icons/feather";
 
 import { useAuth } from "@/src/auth";
@@ -10,8 +10,11 @@ import { Input } from "@/src/Input";
 import { ToastHost, toast } from "@/src/Toast";
 import { colors, spacing, radius } from "@/src/theme";
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
 export default function Register() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { signUpEmail } = useAuth();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
@@ -19,9 +22,14 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
 
   const onSubmit = async () => {
-    if (!email || !password || password.length < 6) { toast("Password must be 6+ chars", "error"); return; }
+    const em = email.trim().toLowerCase();
+    if (!EMAIL_RE.test(em)) { toast("Enter a valid email address", "error"); return; }
+    if (password.length < 6) { toast("Password must be 6+ chars", "error"); return; }
     setLoading(true);
-    try { await signUpEmail(email.trim(), password, name.trim() || undefined); }
+    try {
+      const r = await signUpEmail(em, password, name.trim() || undefined);
+      router.push({ pathname: "/(auth)/verify-email", params: { email: r.email, resend: String(r.resend_in) } });
+    }
     catch (e: any) { toast(e.message || "Signup failed", "error"); }
     finally { setLoading(false); }
   };
@@ -42,7 +50,11 @@ export default function Register() {
             <Input testID="reg-name" label="Name (optional)" value={name} onChangeText={setName} placeholder="Jane Trader" autoCapitalize="words" />
             <Input testID="reg-email" label="Email" value={email} onChangeText={setEmail} placeholder="you@example.com" keyboardType="email-address" />
             <Input testID="reg-password" label="Password" value={password} onChangeText={setPassword} placeholder="At least 6 characters" secureTextEntry />
-            <Button testID="reg-submit" label="Create account" onPress={onSubmit} loading={loading} />
+            <View style={styles.note}>
+              <Icon name="mail" size={14} color={colors.brandPrimary} />
+              <Text style={styles.noteText}>We&apos;ll email you a 6-digit code to confirm it&apos;s really you.</Text>
+            </View>
+            <Button testID="reg-submit" label="Continue" onPress={onSubmit} loading={loading} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -61,4 +73,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, padding: spacing.xl,
     borderWidth: 1, borderColor: colors.border,
   },
+  note: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginBottom: spacing.lg },
+  noteText: { flex: 1, fontSize: 12, color: colors.muted, lineHeight: 17 },
 });

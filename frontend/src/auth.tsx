@@ -16,12 +16,16 @@ export type User = {
   access?: { tier: string; source?: string | null; trial_days_left?: number; trial_ends_at?: string; renews_at?: string | null };
 };
 
+export type SignupPending = { email: string; resend_in: number; expires_in: number; attempts_left: number };
+
 type AuthCtx = {
   user: User | null;
   loading: boolean;
   refresh: () => Promise<void>;
   signInEmail: (email: string, password: string) => Promise<void>;
-  signUpEmail: (email: string, password: string, name?: string) => Promise<void>;
+  signUpEmail: (email: string, password: string, name?: string) => Promise<SignupPending>;
+  verifySignup: (email: string, code: string) => Promise<void>;
+  resendSignupCode: (email: string) => Promise<SignupPending>;
   exchangeSessionId: (session_id: string) => Promise<void>;
   signOut: () => Promise<void>;
 };
@@ -57,8 +61,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await refresh(); // pull full profile incl. membership access
   };
 
-  const signUpEmail = async (email: string, password: string, name?: string) => {
-    const r = await api("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, name }) });
+  // Sign-up is two steps: this emails a 6-digit code; the account is created by verifySignup.
+  const signUpEmail = (email: string, password: string, name?: string): Promise<SignupPending> =>
+    api("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, name }) });
+
+  const resendSignupCode = (email: string): Promise<SignupPending> =>
+    api("/api/auth/register/resend", { method: "POST", body: JSON.stringify({ email }) });
+
+  const verifySignup = async (email: string, code: string) => {
+    const r = await api("/api/auth/register/verify", { method: "POST", body: JSON.stringify({ email, code }) });
     await saveToken(r.session_token);
     setUser(r.user);
     await refresh();
@@ -80,7 +91,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <Ctx.Provider value={{ user, loading, refresh, signInEmail, signUpEmail, exchangeSessionId, signOut }}>
+    <Ctx.Provider value={{ user, loading, refresh, signInEmail, signUpEmail, verifySignup, resendSignupCode, exchangeSessionId, signOut }}>
       {children}
     </Ctx.Provider>
   );

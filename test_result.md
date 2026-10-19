@@ -105,3 +105,8 @@
 - Backend: market.py rate limiter + Mongo candle_cache + stale fallbacks; quant.backtest_same returns equity {hold, managed}; extras.risk_adjusted returns equity; track-record live.calibration.progress; track_loop retries backtest until 90% universe coverage.
 - Frontend: quality.tsx rewritten, new quantcharts.tsx, analyze.tsx (PipelineStrip, calibrated POP hero, money formatting), track-record.tsx (CalibrationChart, EquityCurve, CalibrationProgress).
 - needs_retesting: true
+
+## Iteration 24 (main agent) - Email verification at sign-up
+- Backend: signup.py (register -> pending + emailed code, verify, resend), emailer.py (Emergent managed email). server.py login returns 403 for pending sign-ups.
+- Frontend: app/(auth)/verify-email.tsx new; register.tsx + login.tsx + src/auth.tsx updated.
+- needs_retesting: true

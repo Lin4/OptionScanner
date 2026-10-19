@@ -46,6 +46,7 @@ from engine import (
 )
 import quant
 import market
+import signup
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -63,11 +64,6 @@ logger = logging.getLogger("optiscreen")
 
 
 # ========== MODELS ==========
-class RegisterReq(BaseModel):
-    email: EmailStr
-    password: str
-    name: Optional[str] = None
-
 class LoginReq(BaseModel):
     email: EmailStr
     password: str
@@ -393,31 +389,18 @@ def extract_json(text: str) -> Optional[Dict]:
 
 
 # ========== AUTH ROUTES ==========
-@api_router.post("/auth/register")
-async def register(req: RegisterReq):
-    existing = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
-    user = {
-        "user_id": user_id,
-        "email": req.email.lower(),
-        "name": req.name or req.email.split("@")[0],
-        "password": hash_pw(req.password),
-        "plan": None,
-        "questionnaire_complete": False,
-        "consent_signed": False,
-        "picture": None,
-        "created_at": now_utc(),
-    }
-    await db.users.insert_one(user)
-    token = make_token(user_id)
-    await store_session(token, user_id)
+async def start_user_session(user: Dict[str, Any]) -> Dict[str, Any]:
+    token = make_token(user["user_id"])
+    await store_session(token, user["user_id"])
     return {"session_token": token, "user": {k: v for k, v in user.items() if k not in ("password", "_id")}}
+
+signup.register(api_router, db=db, hash_pw=hash_pw, start_session=start_user_session, logger=logger)
 
 @api_router.post("/auth/login")
 async def login(req: LoginReq):
     user = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
+    if not user and await db.email_verifications.find_one({"email": req.email.lower()}, {"_id": 1}):
+        raise HTTPException(status_code=403, detail="Your email isn't verified yet. Enter the code we emailed you to finish creating your account.")
     if not user or not user.get("password") or not verify_pw(req.password, user["password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = make_token(user["user_id"])
@@ -1205,6 +1188,7 @@ async def startup():
         await db.user_sessions.create_index("session_token", unique=True)
         await db.user_sessions.create_index("user_id")
         await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+        await signup.ensure_indexes(db)
         await db.watchlist.create_index([("user_id", 1), ("ticker", 1)], unique=True)
         await db.alerts.create_index("user_id")
         await db.alerts.create_index("alert_id", unique=True)
