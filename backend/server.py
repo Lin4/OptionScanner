@@ -1189,6 +1189,7 @@ async def startup():
         await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
         await signup.ensure_indexes(db)
         await assistant.ensure_indexes(db)
+        await db.users.create_index("stripe_subscription_id", sparse=True)
         await db.watchlist.create_index([("user_id", 1), ("ticker", 1)], unique=True)
         await db.alerts.create_index("user_id")
         await db.alerts.create_index("alert_id", unique=True)

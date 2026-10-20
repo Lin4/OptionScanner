@@ -123,7 +123,7 @@ export default function Upgrade() {
         {showStripe ? (
           <View style={{ marginTop: spacing.sm }}>
             <Button testID="pay-card" label="Card · Apple Pay · Google Pay (Stripe)" onPress={payStripe} loading={busy} />
-            <Text style={styles.hint}>Secure Stripe checkout (test mode: card 4242 4242 4242 4242). Apple Pay / Google Pay appear on supported devices & browsers.</Text>
+            <Text style={styles.hint}>Secure checkout by Stripe. Apple Pay / Google Pay appear on supported devices & browsers. Cancel anytime from your Profile.</Text>
             <Button testID="pay-paypal" label="PayPal" variant="ghost" onPress={() => router.push(`/paypal?plan=${selected}` as any)} />
           </View>
         ) : null}

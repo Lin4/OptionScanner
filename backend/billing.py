@@ -1,14 +1,26 @@
-"""Plans, 7-day trial, feature matrix, usage counting and Stripe subscription checkout."""
+"""Plans, 7-day trial, feature matrix, usage counting, Stripe subscription checkout and the Stripe webhook."""
 from __future__ import annotations
+import asyncio
+import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import stripe
+from dotenv import dotenv_values
 from fastapi import HTTPException, Header, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from pymongo.errors import DuplicateKeyError
+
+_ENV = dotenv_values(Path(__file__).parent / ".env")
+
+
+def _secret(name: str) -> str:
+    """backend/.env wins over inherited pod variables (the pod ships a test Stripe key)."""
+    return _ENV.get(name) or os.environ.get(name, "")
 
 TRIAL_DAYS = 7
 PLAN_PRICES = {"simple": 9.0, "advance": 29.0, "expert": 79.0}
@@ -80,9 +92,100 @@ class StripeCheckoutReq(BaseModel):
 
 
 def register(api_router, *, db, get_user: Callable, logger):
-    stripe.api_key = os.environ.get("STRIPE_API_KEY", "")
+    stripe.api_key = _secret("STRIPE_API_KEY")
     if "sk_test_emergent" in stripe.api_key:
         stripe.api_base = "https://integrations.emergentagent.com/stripe"
+
+    def _plain(o) -> Dict[str, Any]:
+        return o.to_dict() if hasattr(o, "to_dict") else json.loads(str(o))
+
+    def _period_end(sub: Dict[str, Any]) -> Optional[datetime]:
+        end = sub.get("current_period_end")
+        if not end:  # newer Stripe API versions keep the period on subscription items
+            end = max((it.get("current_period_end") or 0 for it in (sub.get("items") or {}).get("data") or []), default=0)
+        return datetime.fromtimestamp(int(end), tz=timezone.utc) if end else None
+
+    def _expiry(sub: Optional[Dict[str, Any]]) -> datetime:
+        end = _period_end(sub) if sub else None
+        return (end + timedelta(days=2)) if end else datetime.now(timezone.utc) + timedelta(days=31)  # 2-day renewal grace
+
+    def _invoice_sub_id(inv: Dict[str, Any]) -> Optional[str]:
+        sid = inv.get("subscription") or (((inv.get("parent") or {}).get("subscription_details") or {}).get("subscription"))
+        return sid.get("id") if isinstance(sid, dict) else sid
+
+    async def _cancel_sub(sid: str) -> None:
+        try:
+            await asyncio.to_thread(stripe.Subscription.cancel, sid)
+        except stripe.InvalidRequestError:
+            pass  # already cancelled / not found
+
+    async def grant(user_id: str, plan: str, sid: Optional[str], sub: Optional[Dict[str, Any]]) -> None:
+        raw = await db.users.find_one({"user_id": user_id}, {"_id": 0, "stripe_subscription_id": 1})
+        old = (raw or {}).get("stripe_subscription_id")
+        if old and old != sid:  # plan change: stop billing the previous subscription
+            try:
+                await _cancel_sub(old)
+            except Exception as ex:
+                logger.error(f"could not cancel old subscription {old}: {ex}")
+        await db.users.update_one({"user_id": user_id}, {"$set": {
+            "plan": plan, "plan_source": "stripe", "stripe_subscription_id": sid, "plan_expires_at": _expiry(sub),
+            "stripe_payment_failed": False, "stripe_cancel_at_period_end": bool((sub or {}).get("cancel_at_period_end"))}})
+        await log_plan_event(db, user_id, plan, "stripe")
+
+    async def activate_session(session_id: str):
+        """Verify a Checkout Session with Stripe and grant the plan once (shared by polling and the webhook)."""
+        s = _plain(await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id))
+        tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+        paid = s.get("status") == "complete" and s.get("payment_status") in ("paid", "no_payment_required")
+        if tx and paid and tx["status"] != "paid":
+            sid = s.get("subscription")
+            sid = sid.get("id") if isinstance(sid, dict) else sid
+            res = await db.payment_transactions.update_one({"session_id": session_id, "status": {"$ne": "paid"}},
+                                                           {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc),
+                                                                     "subscription_id": sid}})
+            if res.modified_count:  # only the first verified completion grants the plan (idempotent)
+                sub = _plain(await asyncio.to_thread(stripe.Subscription.retrieve, sid)) if sid else None
+                await grant(tx["user_id"], tx["plan"], sid, sub)
+        elif tx and s.get("status") == "expired" and tx["status"] == "initiated":
+            await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {"status": "expired"}})
+        return s, tx, paid
+
+    async def sync_subscription(sid: str, deleted: bool = False) -> None:
+        """Mirror a subscription's current state (renewal, past due, cancel) onto its user."""
+        sub = _plain(await asyncio.to_thread(stripe.Subscription.retrieve, sid))
+        meta = sub.get("metadata") or {}
+        uid, plan, status = meta.get("user_id"), meta.get("plan"), sub.get("status")
+        if not uid or plan not in PLAN_PRICES:
+            return
+        if deleted or status in ("canceled", "unpaid", "incomplete_expired"):
+            res = await db.users.update_one({"user_id": uid, "stripe_subscription_id": sid}, {
+                "$set": {"plan": "free", "plan_source": "stripe_ended", "plan_expires_at": None},
+                "$unset": {"stripe_subscription_id": ""}})
+            if res.modified_count:
+                await log_plan_event(db, uid, "free", "stripe_ended")
+        elif status in ("active", "trialing", "past_due"):
+            await db.users.update_one(
+                {"user_id": uid, "$or": [{"stripe_subscription_id": sid}, {"stripe_subscription_id": None},
+                                         {"stripe_subscription_id": {"$exists": False}}]},
+                {"$set": {"plan": plan, "plan_source": "stripe", "stripe_subscription_id": sid, "plan_expires_at": _expiry(sub),
+                          "stripe_payment_failed": status == "past_due",
+                          "stripe_cancel_at_period_end": bool(sub.get("cancel_at_period_end"))}})
+
+    async def handle_event(event: Dict[str, Any]) -> None:
+        kind, obj = event["type"], event["data"]["object"]
+        if kind == "checkout.session.completed":
+            if obj.get("mode") == "subscription":
+                await activate_session(obj["id"])
+        elif kind in ("invoice.paid", "invoice.payment_succeeded"):
+            sid = _invoice_sub_id(obj)
+            if sid:
+                await sync_subscription(sid)
+        elif kind == "invoice.payment_failed":
+            sid = _invoice_sub_id(obj)
+            if sid:  # keep access until the paid period ends; Stripe retries the card
+                await db.users.update_one({"stripe_subscription_id": sid}, {"$set": {"stripe_payment_failed": True}})
+        elif kind in ("customer.subscription.updated", "customer.subscription.deleted"):
+            await sync_subscription(obj["id"], deleted=kind.endswith("deleted"))
 
     async def bump_scan(user_id: str) -> int:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -119,16 +222,24 @@ def register(api_router, *, db, get_user: Callable, logger):
         else:
             success = f"{base}/api/billing/stripe/return?session_id={{CHECKOUT_SESSION_ID}}"
             cancel = f"{base}/api/billing/stripe/return?cancelled=1"
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[{"price_data": {"currency": "usd", "unit_amount": int(PLAN_PRICES[req.plan] * 100),
-                                        "recurring": {"interval": "month"},
-                                        "product_data": {"name": f"OptiScreen {req.plan.capitalize()}"}}, "quantity": 1}],
-            success_url=success, cancel_url=cancel,
-            customer_email=user.get("email"), client_reference_id=user["user_id"],
-            metadata={"user_id": user["user_id"], "plan": req.plan},
-            subscription_data={"metadata": {"user_id": user["user_id"], "plan": req.plan}},
-        )
+        raw = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password": 0}) or user
+        if raw.get("plan_source") == "stripe" and compute_access(raw)["tier"] == req.plan:
+            raise HTTPException(status_code=400, detail=f"You're already on the {req.plan.capitalize()} plan.")
+        try:
+            session = await asyncio.to_thread(
+                stripe.checkout.Session.create,
+                mode="subscription",
+                line_items=[{"price_data": {"currency": "usd", "unit_amount": int(PLAN_PRICES[req.plan] * 100),
+                                            "recurring": {"interval": "month"},
+                                            "product_data": {"name": f"OptiScreen {req.plan.capitalize()}"}}, "quantity": 1}],
+                success_url=success, cancel_url=cancel,
+                customer_email=user.get("email"), client_reference_id=user["user_id"],
+                metadata={"user_id": user["user_id"], "plan": req.plan},
+                subscription_data={"metadata": {"user_id": user["user_id"], "plan": req.plan}},
+            )
+        except stripe.StripeError as ex:
+            logger.error(f"stripe checkout failed: {ex}")
+            raise HTTPException(status_code=502, detail="Card payments are temporarily unavailable. Please try again later.")
         await db.payment_transactions.insert_one({
             "tx_id": f"tx_{uuid.uuid4().hex[:12]}", "provider": "stripe", "session_id": session.id,
             "user_id": user["user_id"], "plan": req.plan, "amount": PLAN_PRICES[req.plan], "currency": "usd",
@@ -142,21 +253,33 @@ def register(api_router, *, db, get_user: Callable, logger):
         tx = await db.payment_transactions.find_one({"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0})
         if not tx:
             raise HTTPException(status_code=404, detail="Unknown checkout session")
-        s = stripe.checkout.Session.retrieve(session_id)
-        paid = s.status == "complete" and s.payment_status in ("paid", "no_payment_required")
-        if paid and tx["status"] != "paid":
-            # Only the first verified completion grants the plan (idempotent)
-            res = await db.payment_transactions.update_one({"session_id": session_id, "status": {"$ne": "paid"}},
-                                                           {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc),
-                                                                     "subscription_id": s.get("subscription")}})
-            if res.modified_count:
-                await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
-                    "plan": tx["plan"], "plan_source": "stripe", "stripe_subscription_id": s.get("subscription"),
-                    "plan_expires_at": datetime.now(timezone.utc) + timedelta(days=31)}})
-                await log_plan_event(db, user["user_id"], tx["plan"], "stripe")
-        elif s.status == "expired" and tx["status"] == "initiated":
-            await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {"status": "expired"}})
-        return {"status": s.status, "payment_status": s.payment_status, "paid": paid, "plan": tx["plan"]}
+        s, tx, paid = await activate_session(session_id)
+        return {"status": s.get("status"), "payment_status": s.get("payment_status"), "paid": paid, "plan": tx["plan"]}
+
+    @api_router.post("/billing/stripe/webhook")
+    async def stripe_webhook(request: Request):
+        """Stripe -> us: renewals, failed payments, cancellations. Signature-verified and de-duplicated by event id."""
+        secret = _secret("STRIPE_WEBHOOK_SECRET")
+        if not secret:
+            raise HTTPException(status_code=503, detail="Webhook not configured")
+        payload = await request.body()  # raw bytes: the signature covers the exact body
+        try:
+            stripe.Webhook.construct_event(payload, request.headers.get("stripe-signature", ""), secret)
+        except (ValueError, stripe.SignatureVerificationError):
+            raise HTTPException(status_code=400, detail="Invalid signature")
+        event = json.loads(payload)
+        try:
+            await db.stripe_events.insert_one({"_id": event["id"], "type": event["type"], "at": datetime.now(timezone.utc)})
+        except DuplicateKeyError:
+            return {"received": True, "duplicate": True}
+        try:
+            await handle_event(event)
+        except Exception as ex:
+            await db.stripe_events.delete_one({"_id": event["id"]})  # let Stripe retry it
+            logger.exception(f"stripe webhook {event['type']} failed: {ex}")
+            raise HTTPException(status_code=500, detail="Webhook processing failed")
+        logger.info(f"stripe webhook {event['type']} processed")
+        return {"received": True}
 
     @api_router.get("/billing/stripe/return", response_class=HTMLResponse)
     async def stripe_return(session_id: Optional[str] = None, cancelled: Optional[str] = None):
@@ -166,7 +289,16 @@ def register(api_router, *, db, get_user: Callable, logger):
     @api_router.post("/billing/downgrade")
     async def billing_downgrade(authorization: Optional[str] = Header(default=None)):
         user = await get_user(authorization)
-        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": "free", "plan_source": None, "plan_expires_at": None}})
+        raw = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "stripe_subscription_id": 1})
+        sid = (raw or {}).get("stripe_subscription_id")
+        if sid:  # stop future Stripe charges
+            try:
+                await _cancel_sub(sid)
+            except Exception as ex:
+                logger.error(f"cancel subscription {sid} failed: {ex}")
+                raise HTTPException(status_code=502, detail="Couldn't cancel your Stripe subscription. Please try again.")
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": "free", "plan_source": None, "plan_expires_at": None},
+                                                                 "$unset": {"stripe_subscription_id": ""}})
         await log_plan_event(db, user["user_id"], "free", "user")
         return {"ok": True}
 
