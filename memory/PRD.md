@@ -166,3 +166,4 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - Files: icon.png (1024 RGB, no alpha - App Store), adaptive-icon.png (fg, 66% safe zone), adaptive-background.png, adaptive-monochrome.png (Android 13 themed), splash-image.png (rounded mark), favicon.png (196), notification-icon.png (96 white silhouette).
 - app.json: adaptiveIcon backgroundImage/monochromeImage, bg #2563EB; splash bg #FFFFFF (dark #0B1220), imageWidth 160; expo-notifications icon -> notification-icon.png, color #2563EB.
 - Pending: finish 5 App Store screenshots (capture.py stalled at testID track-backtest).
+- Individual icon exports: /app/store-assets/icon/individual/ (A/B/C as 1024 square + _rounded PNGs; scan_lens_sizes/ 20-1024px). Script: export_individual.py. Fixed concept C arrow-tip bump in make_icons.py.

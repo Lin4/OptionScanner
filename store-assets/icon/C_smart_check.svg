@@ -2,5 +2,5 @@
 <linearGradient id="s" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".55" stop-color="#FFFFFF"/><stop offset="1" stop-color="#6EE7B7"/></linearGradient></defs>
 <rect width="1024" height="1024" fill="url(#g)"/>
 <circle cx="512" cy="512" r="330" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="30" stroke-dasharray="1500 600" transform="rotate(130 512 512)"/>
-<polyline points="292,548 446,700 732,340" fill="none" stroke="url(#s)" stroke-width="92" stroke-linecap="round" stroke-linejoin="round"/>
+<polyline points="292,548 446,700 664,426" fill="none" stroke="url(#s)" stroke-width="92" stroke-linecap="round" stroke-linejoin="round"/>
 <polygon points="757,309 611,344 756,459" fill="#6EE7B7" stroke="#6EE7B7" stroke-width="34" stroke-linejoin="round"/></svg>

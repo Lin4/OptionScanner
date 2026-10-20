@@ -35,7 +35,7 @@ def rot(v, a):
 back = (-u[0] * 150, -u[1] * 150)
 w1, w2 = rot(back, math.radians(38)), rot(back, math.radians(-38))
 p = lambda q: f"{q[0]:.0f},{q[1]:.0f}"
-end = (tip[0] - u[0] * 40, tip[1] - u[1] * 40)
+end = (tip[0] - u[0] * 150, tip[1] - u[1] * 150)
 C = svg(f'''
 <rect width="1024" height="1024" fill="url(#g)"/>
 <circle cx="512" cy="512" r="330" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="30" stroke-dasharray="1500 600" transform="rotate(130 512 512)"/>
