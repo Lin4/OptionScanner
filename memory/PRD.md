@@ -160,3 +160,9 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 
 ## Update (Jun 2026) - Bundle id
 - app.json ios.bundleIdentifier + android.package = com.optiiq.app (was com.emergent.optionscope.ykvdsl). RevenueCat /setup re-run with the new id (same apple/play app ids, same SDK keys, packages unchanged).
+
+## Update (Jun 2026) - App icon (Scan Lens, concept A)
+- Chosen icon: A "Scan Lens" (magnifier over rising line, blue->teal gradient). Generator: /app/store-assets/icon/make_final_icon.py (exports to store-assets/icon/final and copies into frontend/assets/images); preview: preview_final.py -> final/icon_set_preview.png.
+- Files: icon.png (1024 RGB, no alpha - App Store), adaptive-icon.png (fg, 66% safe zone), adaptive-background.png, adaptive-monochrome.png (Android 13 themed), splash-image.png (rounded mark), favicon.png (196), notification-icon.png (96 white silhouette).
+- app.json: adaptiveIcon backgroundImage/monochromeImage, bg #2563EB; splash bg #FFFFFF (dark #0B1220), imageWidth 160; expo-notifications icon -> notification-icon.png, color #2563EB.
+- Pending: finish 5 App Store screenshots (capture.py stalled at testID track-backtest).

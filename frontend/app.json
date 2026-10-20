@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "OptiScreen",
+    "name": "TradeSI",
     "slug": "frontend",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -17,7 +17,9 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000000"
+        "backgroundImage": "./assets/images/adaptive-background.png",
+        "monochromeImage": "./assets/images/adaptive-monochrome.png",
+        "backgroundColor": "#2563EB"
       },
       "package": "com.optiiq.app",
       "permissions": ["RECORD_AUDIO", "POST_NOTIFICATIONS"]
@@ -33,9 +35,13 @@
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-image.png",
-          "imageWidth": 200,
+          "imageWidth": 160,
           "resizeMode": "contain",
-          "backgroundColor": "#000000"
+          "backgroundColor": "#FFFFFF",
+          "dark": {
+            "image": "./assets/images/splash-image.png",
+            "backgroundColor": "#0B1220"
+          }
         }
       ],
       "expo-font",
@@ -46,8 +52,8 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/icon.png",
-          "color": "#0F766E"
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#2563EB"
         }
       ],
       [

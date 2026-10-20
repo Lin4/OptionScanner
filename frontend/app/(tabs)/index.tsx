@@ -15,6 +15,7 @@ import { colors, spacing, radius } from "@/src/theme";
 import { PlanGate, usePlan, LockedFeature } from "@/src/plans";
 import { AnnouncementBanner } from "@/src/Announcements";
 import { OptiScorePill } from "@/src/quality";
+import { money } from "@/src/quantcharts";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Filters, ProfileId, PROFILE_INFO, defaultFilters, filtersPayload, FilterPanel, ProfilePicker, Label, accountLabel } from "@/src/screen";
 
@@ -216,10 +217,10 @@ function Discover() {
             </View>
             <View style={styles.metricsRow}>
               <Mini label={r.pop_calibrated != null ? "POP (cal.)" : "POP"} value={`${r.pop_calibrated ?? r.pop}%`} />
-              <Mini label="ROC" value={r.roc_pct != null ? `${r.roc_pct}%` : "∞"} tone="success" />
-              <Mini label={r.premium_type === "debit" ? "Debit" : "Credit"} value={`$${r.premium}`} />
-              <Mini label="Max profit" value={r.max_profit != null ? `$${r.max_profit}` : "∞"} tone="success" />
-              <Mini label="Max loss" value={r.max_loss != null ? `$${r.max_loss}` : "undef"} tone="error" />
+              <Mini label="ROC" value={r.roc_pct != null ? `${Math.round(r.roc_pct)}%` : "∞"} tone="success" />
+              <Mini label={r.premium_type === "debit" ? "Debit" : "Credit"} value={`$${Number(r.premium).toFixed(2)}`} />
+              <Mini label="Max profit" value={r.max_profit != null ? short(r.max_profit) : "∞"} tone="success" />
+              <Mini label="Max loss" value={r.max_loss != null ? short(-Math.abs(r.max_loss)) : "undef"} tone="error" />
             </View>
             <View style={styles.tagRow}>
               <Badge text={`Liquidity ${r.liquidity?.grade || "—"}${r.liquidity?.estimated ? " (est.)" : ""}`} kind={r.liquidity?.grade === "High" ? "success" : r.liquidity?.grade === "Low" ? "error" : "info"} />
@@ -261,12 +262,15 @@ function ChipRow({ label, value, onChange, options, testKey }: { label: string; 
   );
 }
 
+// Compact dollars so 5 metric tiles fit on a phone: $370, −$1.1k
+const short = (v: number) => (Math.abs(v) >= 1000 ? `${v < 0 ? "−" : ""}$${(Math.abs(v) / 1000).toFixed(1)}k` : money(v));
+
 function Mini({ label, value, tone }: { label: string; value: string; tone?: "success" | "error" }) {
   const color = tone === "success" ? colors.success : tone === "error" ? colors.error : colors.onSurface;
   return (
     <View style={styles.mini}>
       <Text style={styles.miniLabel}>{label}</Text>
-      <Text style={[styles.miniVal, { color }]}>{value}</Text>
+      <Text style={[styles.miniVal, { color }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{value}</Text>
     </View>
   );
 }

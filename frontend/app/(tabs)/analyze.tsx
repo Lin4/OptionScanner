@@ -38,7 +38,7 @@ function Analyze() {
   const [onWatchlist, setOnWatchlist] = useState(false);
   const [strategy, setStrategy] = useState("auto");
   const [acct, setAcct] = useState("reg_t");
-  const [acctSize, setAcctSize] = useState("25000");
+  const [acctSize, setAcctSize] = useState(""); // empty -> server uses the profile account size
   const [riskPct, setRiskPct] = useState("1");
   const [minRR, setMinRR] = useState("2");
   const plan = usePlan();
