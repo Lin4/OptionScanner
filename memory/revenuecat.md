@@ -1,4 +1,4 @@
-# RevenueCat — integrated (2026-10-16)
+# RevenueCat — integrated (2026-10-16; bundle id changed + /setup re-run 2026-10-20)
 This file is a memory for interacting with the user's RevenueCat account via the integration proxy.
 
 ## Identifiers (from /setup response)
@@ -7,7 +7,7 @@ This file is a memory for interacting with the user's RevenueCat account via the
 - play_app_id: appcaa98a3e2a
 - entitlement_lookup_key: pro
 - offering_lookup_key: default
-- bundle_id / package: com.emergent.optionscope.ykvdsl
+- bundle_id / package: com.emergent.optionscope.optiiq
 - Packages (package -> product_id, price):
   - $rc_monthly -> prod8cf8ab9d8e ($9 / P1M) = Simple tier
   - advance_monthly -> prod3936fd5215 ($29 / P1M) = Advance tier
