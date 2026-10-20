@@ -167,3 +167,9 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - app.json: adaptiveIcon backgroundImage/monochromeImage, bg #2563EB; splash bg #FFFFFF (dark #0B1220), imageWidth 160; expo-notifications icon -> notification-icon.png, color #2563EB.
 - Pending: finish 5 App Store screenshots (capture.py stalled at testID track-backtest).
 - Individual icon exports: /app/store-assets/icon/individual/ (A/B/C as 1024 square + _rounded PNGs; scan_lens_sizes/ 20-1024px). Script: export_individual.py. Fixed concept C arrow-tip bump in make_icons.py.
+
+## Update (Jun 2026) - App Store screenshots (6 per device)
+- Scripts: /app/store-assets/screenshots/capture_devices.py <iphone|duo|ipad> (real app screens via Playwright, trader@optiscreen.app, NVDA options + AMZN long-term) and compose_devices.py (headline + device frame).
+- Output: screenshots/final/iPhone_6.3in_1206x2622, iPhone_Duo_2007x2853 (inner display 669x951@3x), iPad_13in_2064x2752; 01_scan, 02_rank, 03_plan, 04_validate, 05_track, 06_long. RGB, no alpha.
+- Zip with screenshots + icons: /app/store-assets/TradeSI_App_Store_Assets.zip
+- App tweak: removed duplicate "OptiIQ Value" section label in Analyze > Long-term.

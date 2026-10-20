@@ -530,7 +530,6 @@ function LongForm({ r }: { r: any }) {
         <Badge text={r.verdict || "HOLD"} kind={r.verdict === "BUY" ? "success" : r.verdict === "SELL" ? "error" : "warn"} />
         {r.confidence ? <Badge text={`${r.confidence} conf.`} kind="info" /> : null}
       </View>
-      <Text style={styles.sectionLabel}>OptiIQ Value</Text>
       <OptiIQCard o={r.optiiq} />
       <ValuationEditor r={r} />
       <Text style={styles.sectionLabel}>Fundamentals</Text>
