@@ -159,4 +159,4 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - BLOCKER (user side, Jun 2026): Stripe account acct_1EAWQ7CgxXsVeyZV has charges_enabled=false and no active payment methods -> live Checkout creation fails ("No valid payment method types"). User must finish account activation + enable Cards in Dashboard → Settings → Payment methods.
 
 ## Update (Jun 2026) - Bundle id
-- app.json ios.bundleIdentifier + android.package = com.emergent.optionscope.optiiq (was com.emergent.optionscope.ykvdsl). RevenueCat /setup re-run with the new id (same apple/play app ids, same SDK keys, packages unchanged).
+- app.json ios.bundleIdentifier + android.package = com.optiiq.app (was com.emergent.optionscope.ykvdsl). RevenueCat /setup re-run with the new id (same apple/play app ids, same SDK keys, packages unchanged).

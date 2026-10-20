@@ -9,7 +9,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.optionscope.optiiq",
+      "bundleIdentifier": "com.optiiq.app",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Record voice queries to analyze stocks hands-free"
       }
@@ -19,7 +19,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#000000"
       },
-      "package": "com.emergent.optionscope.optiiq",
+      "package": "com.optiiq.app",
       "permissions": ["RECORD_AUDIO", "POST_NOTIFICATIONS"]
     },
     "web": {
