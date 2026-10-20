@@ -173,3 +173,4 @@ Research-first, transparent, trust-driven AI intelligence platform. AI acts as a
 - Output: screenshots/final/iPhone_6.3in_1206x2622, iPhone_Duo_2007x2853 (inner display 669x951@3x), iPad_13in_2064x2752; 01_scan, 02_rank, 03_plan, 04_validate, 05_track, 06_long. RGB, no alpha.
 - Zip with screenshots + icons: /app/store-assets/TradeSI_App_Store_Assets.zip
 - App tweak: removed duplicate "OptiIQ Value" section label in Analyze > Long-term.
+- Screenshot frames upgraded to realistic iPhone mockups (titanium gradient edge, side buttons, Dynamic Island, home indicator) in compose_devices.py; zip refreshed.

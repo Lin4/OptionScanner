@@ -30,10 +30,12 @@ DEVICES = {
 
 # frame geometry as fractions of the device width
 FRAMES = {
-    "phone": dict(pad=0.025, r=0.142, sr=0.118, status=0.128, bottom=0.075, island=True, font=0.045),
-    "duo": dict(pad=0.022, r=0.080, sr=0.062, status=0.070, bottom=0.045, island=False, font=0.030),
-    "ipad": dict(pad=0.022, r=0.052, sr=0.034, status=0.034, bottom=0.022, island=False, font=0.018),
+    "phone": dict(edge=0.013, pad=0.022, r=0.150, sr=0.118, status=0.128, bottom=0.075, island=True, font=0.045, buttons=True),
+    "duo": dict(edge=0.009, pad=0.020, r=0.085, sr=0.062, status=0.070, bottom=0.045, island=False, font=0.030, buttons=True),
+    "ipad": dict(edge=0.007, pad=0.020, r=0.055, sr=0.034, status=0.034, bottom=0.022, island=False, font=0.018, buttons=False),
 }
+# titanium side buttons: (side, top as fraction of device height, length fraction)
+BUTTONS = [("l", 0.160, 0.040), ("l", 0.228, 0.072), ("l", 0.316, 0.072), ("r", 0.262, 0.110)]
 
 STATUS_ICONS = """<svg viewBox="0 0 150 40" fill="#0B1220">
   <rect x="0" y="26" width="9" height="12" rx="2"/><rect x="13" y="19" width="9" height="19" rx="2"/>
@@ -53,6 +55,7 @@ def page_html(d: dict, raw: Path, headline: str, sub: str) -> str:
     headline = headline.replace("<g>", '<span class="g">').replace("</g>", "</span>")
     time = "9:41 &nbsp;Tue Jun 9" if d["kind"] == "ipad" else "9:41"
     island = '<div class="island"></div>' if f["island"] else ('<div class="cam"></div>' if d["kind"] == "duo" else "")
+    buttons = "".join(f'<i class="btn" data-s="{s}" data-t="{t}" data-l="{n}"></i>' for s, t, n in BUTTONS) if f["buttons"] else ""
     W, H = d["W"], d["H"]
     return f"""<html><head><meta charset="utf-8"><style>
 @font-face {{ font-family: InterX; src: url('file://{FONT}/Inter-ExtraBold.ttf'); font-weight: 800; }}
@@ -73,7 +76,11 @@ body {{ width: {W}px; height: {H}px; overflow: hidden; font-family: InterX, sans
 h1 {{ text-wrap: balance; margin-top: {d['brand']*0.9}px; font-weight: 800; font-size: {d['h1']}px; line-height: 1.08; letter-spacing: -{d['h1']*0.025}px; color: #0B1B3F; }}
 .g {{ background: linear-gradient(90deg, #1D4ED8, #059669); -webkit-background-clip: text; color: transparent; }}
 p {{ text-wrap: balance; margin: {d['p']*0.6}px auto 0; max-width: {W*0.82}px; font-weight: 500; font-size: {d['p']}px; line-height: 1.36; color: #475569; }}
-.dev {{ position: relative; margin-top: {d['p']*1.4}px; background: #0B1220; box-shadow: 0 {W*0.04}px {W*0.1}px rgba(15,23,42,.28), 0 0 0 3px #1F2937 inset; }}
+.dev {{ position: relative; margin-top: {d['p']*1.4}px; border-style: solid; border-color: transparent;
+        background: linear-gradient(#05070B, #05070B) padding-box,
+                    linear-gradient(135deg, #E4E7EB 0%, #7C838C 18%, #D3D7DC 38%, #5E656E 60%, #C9CDD2 80%, #8A9099 100%) border-box;
+        box-shadow: 0 {W*0.045}px {W*0.1}px rgba(15,23,42,.30), 0 {W*0.01}px {W*0.02}px rgba(15,23,42,.18); }}
+.btn {{ position: absolute; background: linear-gradient(90deg, #6B727B, #D5D9DE 50%, #7E858E); }}
 .screen {{ position: relative; overflow: hidden; background: #fff; }}
 .status {{ display: flex; align-items: center; justify-content: space-between; font-weight: 600; color: #0B1220; }}
 .status svg {{ height: 32%; }}
@@ -89,7 +96,7 @@ p {{ text-wrap: balance; margin: {d['p']*0.6}px auto 0; max-width: {W*0.82}px; f
   <h1>{headline}</h1>
   <p>{sub}</p>
 </div>
-<div class="dev" id="dev"><div class="screen" id="screen">
+<div class="dev" id="dev">{buttons}<div class="screen" id="screen">
   {island}
   <div class="status" id="status"><span>{time}</span>{STATUS_ICONS}</div>
   <img src="data:image/png;base64,{b64(raw)}">
@@ -102,11 +109,18 @@ p {{ text-wrap: balance; margin: {d['p']*0.6}px auto 0; max-width: {W*0.82}px; f
   const dev = document.getElementById('dev'), scr = document.getElementById('screen'), st = document.getElementById('status');
   const topY = document.getElementById('text').getBoundingClientRect().bottom + {d['p']*1.4};
   const avail = H - topY - {H*0.03};
-  // total height = 2*pad*w + status*w + bottom*w + (w - 2*pad*w) * AR
-  let w = avail / (2 * F.pad + F.status + F.bottom + (1 - 2 * F.pad) * AR);
+  // total height = 2*(edge+pad)*w + status*w + bottom*w + (w - 2*(edge+pad)*w) * AR
+  const K = F.edge + F.pad;
+  let w = avail / (2 * K + F.status + F.bottom + (1 - 2 * K) * AR);
   w = Math.min(w, W * {d['maxw']});
-  const pad = F.pad * w;
-  dev.style.width = w + 'px'; dev.style.padding = pad + 'px'; dev.style.borderRadius = F.r * w + 'px';
+  const pad = F.pad * w, edge = F.edge * w;
+  dev.style.width = w + 'px'; dev.style.padding = pad + 'px'; dev.style.borderWidth = edge + 'px'; dev.style.borderRadius = F.r * w + 'px';
+  const devH = dev.getBoundingClientRect().height, bw = w * 0.011;
+  document.querySelectorAll('.btn').forEach(b => {{
+    b.style.width = bw + 'px'; b.style.height = b.dataset.l * devH + 'px'; b.style.top = b.dataset.t * devH + 'px';
+    b.style[b.dataset.s === 'l' ? 'left' : 'right'] = -(edge + bw * 0.9) + 'px';
+    b.style.borderRadius = b.dataset.s === 'l' ? `${{bw}}px 0 0 ${{bw}}px` : `0 ${{bw}}px ${{bw}}px 0`;
+  }});
   scr.style.borderRadius = F.sr * w + 'px';
   document.getElementById('home').style.height = F.bottom * w + 'px';
   st.style.height = F.status * w + 'px'; st.style.fontSize = F.font * w + 'px';
